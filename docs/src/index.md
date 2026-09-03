@@ -1,15 +1,25 @@
-# REOB 文档
+# REOB.jl
 
-REOB（Relative Expression Ordering-based Biomarker identification algorithm）是一个 Julia 实现的二分类生物标志识别算法包。它基于基因对表达秩序关系（Relative Expression Ordering，REO），筛选在对照组（阴性样本）中表达秩序稳定、但在病例组（阳性样本）中秩序关系反转的基因对，用于样本分类预测。
+*Relative Expression Ordering-based Biomarker Identification*
 
-REO 方法使用样本内基因作为参照，不依赖基因表达绝对值，因此通常不需要对原始数据做批次校正，适合跨数据集和跨定量技术平台的建模场景。除基因表达矩阵外，同样的输入结构也可用于蛋白表达矩阵等连续定量数据。
+REOB identifies gene pairs whose within-sample expression ordering is stable
+in control samples but reversed in case samples.  Each such pair becomes a
+binary feature, and a weighted ensemble of pairs produces a sample-level
+classification score.
 
-REOB 包实现了模型训练、验证评估、显著性检验等功能模块，并提供文献中的 TSP、k-TSP 和 AUC-TSP 作为传统秩序基因对筛选基线方法。
+Because REO uses within-sample gene expression as a reference, it does not
+depend on absolute expression values and typically does not require batch
+correction, making it suitable for cross-dataset and cross-platform modelling.
+The same input structure applies to protein expression or other continuous
+quantitative data.
 
-## 算法原理
+REOB implements model training, evaluation, and significance testing, and
+includes TSP, k-TSP, and AUC-TSP as baseline methods from the literature.
+
+## Algorithm
 
 ```@raw html
-<p>对样本 <math><mi>s</mi></math> 和第 <math><mi>i</mi></math> 个方向已对齐的基因对 <math><mo stretchy="false">(</mo><msub><mi>A</mi><mi>i</mi></msub><mo>,</mo><msub><mi>B</mi><mi>i</mi></msub><mo stretchy="false">)</mo></math>，REOB 将其转换为二值特征：</p>
+<p>For a sample <math><mi>s</mi></math> and the <math><mi>i</mi></math>-th direction-aligned gene pair <math><mo stretchy="false">(</mo><msub><mi>A</mi><mi>i</mi></msub><mo>,</mo><msub><mi>B</mi><mi>i</mi></msub><mo stretchy="false">)</mo></math>, REOB converts the ordering into a binary feature:</p>
 ```
 
 ```@raw html
@@ -20,7 +30,7 @@ REOB 包实现了模型训练、验证评估、显著性检验等功能模块，
     <mo>=</mo>
     <mi mathvariant="bold">1</mi><mo>{</mo>
     <msub><mi>E</mi><mrow><msub><mi>A</mi><mi>i</mi></msub><mo>,</mo><mi>s</mi></mrow></msub>
-    <mo>&gt;</mo>
+    <mo>></mo>
     <msub><mi>E</mi><mrow><msub><mi>B</mi><mi>i</mi></msub><mo>,</mo><mi>s</mi></mrow></msub>
     <mo>}</mo>
   </mrow>
@@ -29,13 +39,13 @@ REOB 包实现了模型训练、验证评估、显著性检验等功能模块，
 ```
 
 ```@raw html
-<p>其中 <math><msub><mi>E</mi><mrow><msub><mi>A</mi><mi>i</mi></msub><mo>,</mo><mi>s</mi></mrow></msub></math> 和 <math><msub><mi>E</mi><mrow><msub><mi>B</mi><mi>i</mi></msub><mo>,</mo><mi>s</mi></mrow></msub></math> 分别表示样本 <math><mi>s</mi></math> 中基因 <math><msub><mi>A</mi><mi>i</mi></msub></math> 与 <math><msub><mi>B</mi><mi>i</mi></msub></math> 的表达量；<math><msub><mi>x</mi><mi>i</mi></msub><mo stretchy="false">(</mo><mi>s</mi><mo stretchy="false">)</mo><mo>=</mo><mn>1</mn></math> 表示该基因对支持阳性类别，<math><msub><mi>x</mi><mi>i</mi></msub><mo stretchy="false">(</mo><mi>s</mi><mo stretchy="false">)</mo><mo>=</mo><mn>0</mn></math> 表示不支持阳性类别。</p>
+<p>where <math><msub><mi>E</mi><mrow><msub><mi>A</mi><mi>i</mi></msub><mo>,</mo><mi>s</mi></mrow></msub></math> and <math><msub><mi>E</mi><mrow><msub><mi>B</mi><mi>i</mi></msub><mo>,</mo><mi>s</mi></mrow></msub></math> are the expression values of genes <math><msub><mi>A</mi><mi>i</mi></msub></math> and <math><msub><mi>B</mi><mi>i</mi></msub></math> in sample <math><mi>s</mi></math>; <math><msub><mi>x</mi><mi>i</mi></msub><mo stretchy="false">(</mo><mi>s</mi><mo stretchy="false">)</mo><mo>=</mo><mn>1</mn></math> means the pair supports the positive class, <math><msub><mi>x</mi><mi>i</mi></msub><mo stretchy="false">(</mo><mi>s</mi><mo stretchy="false">)</mo><mo>=</mo><mn>0</mn></math> means it does not.</p>
 ```
 
-REOB 支持三种基于 REO 特征的分类策略：
+REOB supports three classification strategies:
 
 ```@raw html
-<ul><li><code>VotingMethod</code>：多数投票方法。若最终选择 <math><mi>n</mi></math> 个基因对，则样本评分为</li></ul>
+<ul><li><code>VotingMethod</code>: equal-weight majority vote.  With <math><mi>n</mi></math> selected pairs the sample score is</li></ul>
 ```
 
 ```@raw html
@@ -58,10 +68,10 @@ REOB 支持三种基于 REO 特征的分类策略：
 ```
 
 ```@raw html
-<p>其中 <math><mi>b</mi></math> 为训练阶段根据投票阈值校准得到的偏置；当 <math><mi>b</mi><mo>=</mo><mn>0</mn></math> 时，该式退化为普通等权多数投票。</p>
+<p>where <math><mi>b</mi></math> is a bias calibrated during training; when <math><mi>b</mi><mo>=</mo><mn>0</mn></math> this reduces to ordinary majority voting.</p>
 ```
 
-- `RFMethod`：基于随机森林树桩筛选稳定基因对，并使用归一化特征重要性作为权重：
+- `RFMethod`: random-forest stump stability selection with normalised feature importance as weights:
 
 ```@raw html
 <div class="math-display">
@@ -93,7 +103,7 @@ REOB 支持三种基于 REO 特征的分类策略：
 </div>
 ```
 
-- `LassoMethod`：使用 Lasso/Elastic Net 路径进行稳定性选择，并通过 Logistic 映射输出阳性概率：
+- `LassoMethod`: Lasso/Elastic Net stability selection with a logistic output:
 
 ```@raw html
 <div class="math-display">
@@ -126,7 +136,7 @@ REOB 支持三种基于 REO 特征的分类策略：
 </div>
 ```
 
-最终分类规则为：
+The final classification rule is:
 
 ```@raw html
 <div class="math-display">
@@ -160,17 +170,17 @@ REOB 支持三种基于 REO 特征的分类策略：
 </div>
 ```
 
-## 输入格式
+## Input Format
 
-所有训练和预测入口都采用以下约定：
+All training and prediction functions expect:
 
 ```julia
-data::Matrix      # 基因 × 样本
-labels::Vector    # 样本标签，取值为 0/1，与 data 列顺序一致
-genes::Vector     # 基因名称，与 data 行顺序一致
+data::Matrix      # genes × samples
+labels::Vector    # binary labels (0/1), one per column of data
+genes::Vector     # gene names, one per row of data
 ```
 
-## REOB 训练流程
+## Training
 
 ```julia
 using REOB
@@ -185,18 +195,19 @@ cfg = REOConfig(
 model = fit_reo(data, labels, genes, cfg)
 ```
 
-训练入口 `fit_reo` 会执行：
+`fit_reo` executes the following steps:
 
-1. `filter_low_rank_genes`：去除低表达秩基因。
-2. `filter_diff_rank_genes`：按两类平均秩差做基因预筛选。
-3. `filter_pairs_by_bqc`：筛选在对照组稳定、在病例组稳定翻转的基因对。
-4. 可选混淆因子审计：剔除与协变量显著相关的基因对。
-5. `prune_hub_genes`：限制单个基因在多个对子中过度出现。
-6. `build_feature_matrix_aligned`：生成方向与正类对齐的二值特征。
-7. `drop_correlated_features`：删除高度相关的冗余基因对。
-8. 根据 `cfg.method` 调用 Voting、Random Forest 或 Lasso 策略。
+1. `filter_low_rank_genes` — remove low-expression genes.
+2. `filter_diff_rank_genes` — retain top differentially-ranked genes.
+3. `filter_pairs_by_bqc` — Bayesian Quality Control stable-flip filter.
+4. Optional confounding-factor audit — remove pairs associated with covariates.
+5. `prune_hub_genes` — limit per-gene pair count.
+6. `build_feature_matrix_aligned` — direction-aligned binary features.
+7. `drop_correlated_features` — remove highly correlated features.
+8. Dispatch to Voting, RF, or Lasso based on `cfg.method`.
 
-下图按输入、预筛选、质量控制、建模和输出五个阶段纵向展开。阶段名作为流程节点参与排版，避免分组标题压住跨阶段箭头。
+The diagram below expands the pipeline across five stages: Input, Pre-filtering,
+Quality Control, Modelling, and Output.
 
 ```mermaid
 %%{init: {"theme":"base","securityLevel":"strict","flowchart":{"curve":"basis","nodeSpacing":20,"rankSpacing":42,"htmlLabels":true},"themeVariables":{"background":"transparent","mainBkg":"transparent","clusterBkg":"transparent","fontFamily":"Lato, Inter, sans-serif","fontSize":"16px","primaryTextColor":"#1f2933","lineColor":"#7a8094","primaryBorderColor":"#66c2a5"}}}%%
@@ -210,34 +221,34 @@ flowchart TB
     classDef decision fill:#fff8d9,stroke:#ffd92f,color:#4a4210,stroke-width:2px;
     classDef note fill:#f7f7f7,stroke:#b3b3b3,color:#383838,stroke-width:1.5px;
 
-    S1["01 输入数据"]:::stage
-    I1["data: 基因 × 样本"]:::input
+    S1["01 Input"]:::stage
+    I1["data: genes × samples"]:::input
     I2["labels: 0 / 1"]:::input
-    I3["genes: 行顺序一致"]:::input
+    I3["genes: row order"]:::input
     I4["cfg: REOConfig"]:::input
 
-    S2["02 基因级预筛选"]:::stage
-    P1["低表达过滤<br/>filter_low_rank_genes"]:::prefilter
-    P2["差异秩次过滤<br/>filter_diff_rank_genes"]:::prefilter
-    P3["候选基因集合<br/>selected_genes"]:::note
+    S2["02 Gene-level pre-filtering"]:::stage
+    P1["Low-expression filter<br/>filter_low_rank_genes"]:::prefilter
+    P2["Differential rank filter<br/>filter_diff_rank_genes"]:::prefilter
+    P3["Candidate gene set<br/>selected_genes"]:::note
 
-    S3["03 基因对质量控制"]:::stage
-    Q1["候选基因对<br/>combinations"]:::qc
-    Q2["BQC 稳定翻转<br/>filter_pairs_by_bqc"]:::qc
-    Q3{"协变量?"}:::decision
-    Q4["混淆因子审计<br/>is_confounded"]:::qc
-    Q5["Hub 基因剪枝<br/>prune_hub_genes"]:::qc
-    Q6["方向对齐<br/>build_feature_matrix_aligned"]:::qc
-    Q7["相关性剪枝<br/>drop_correlated_features"]:::qc
+    S3["03 Gene-pair quality control"]:::stage
+    Q1["Candidate pairs<br/>combinations"]:::qc
+    Q2["BQC stable-flip filter<br/>filter_pairs_by_bqc"]:::qc
+    Q3{"Confounders?"}:::decision
+    Q4["Confounding audit<br/>is_confounded"]:::qc
+    Q5["Hub-gene pruning<br/>prune_hub_genes"]:::qc
+    Q6["Direction alignment<br/>build_feature_matrix_aligned"]:::qc
+    Q7["Correlation pruning<br/>drop_correlated_features"]:::qc
 
-    S4["04 模型训练"]:::stage
+    S4["04 Model training"]:::stage
     M1{"cfg.method"}:::decision
     M2["VotingMethod<br/>select_feature_subset"]:::train
     M3["RFMethod<br/>select_top_10_models"]:::train
     M4["LassoMethod<br/>stability_selection_lasso"]:::train
     M5["REOModel<br/>pairs + weights"]:::note
 
-    S5["05 预测与评估"]:::stage
+    S5["05 Prediction & evaluation"]:::stage
     O1["predict_reo<br/>probs / preds"]:::output
     O2["evaluate_reo<br/>acc / mcc / auc"]:::output
     O3["run_permutation_test<br/>p value"]:::output
@@ -245,8 +256,8 @@ flowchart TB
     S1 --> I1 --> I2 --> I3 --> I4 --> S2
     S2 --> P1 --> P2 --> P3 --> S3
     S3 --> Q1 --> Q2 --> Q3
-    Q3 -- 是 --> Q4 --> Q5
-    Q3 -- 否 --> Q5
+    Q3 -- Yes --> Q4 --> Q5
+    Q3 -- No --> Q5
     Q5 --> Q6 --> Q7 --> S4
     S4 --> M1
     M1 --> M2 --> M5
@@ -257,36 +268,36 @@ flowchart TB
     O1 --> O3
 ```
 
-| 阶段 | 关键输入或函数 | 主要产出 |
+| Stage | Key input or function | Output |
 | --- | --- | --- |
-| 01 输入数据 | `data`、`labels`、`genes`、`cfg` | 训练所需的表达矩阵、标签、基因名和配置 |
-| 02 基因级预筛选 | `filter_low_rank_genes`、`filter_diff_rank_genes` | 候选基因集合 `selected_genes` |
-| 03 基因对质量控制 | `filter_pairs_by_bqc`、`is_confounded`、`prune_hub_genes`、`build_feature_matrix_aligned`、`drop_correlated_features` | 方向对齐、去冗余的最终特征对 |
-| 04 模型训练 | `VotingMethod`、`RFMethod`、`LassoMethod` | `REOModel` |
-| 05 预测与评估 | `predict_reo`、`evaluate_reo`、`run_permutation_test` | 预测结果、指标和置换检验结果 |
+| 01 Input | `data`, `labels`, `genes`, `cfg` | Expression matrix, labels, gene names, config |
+| 02 Gene-level pre-filtering | `filter_low_rank_genes`, `filter_diff_rank_genes` | Candidate gene set |
+| 03 Gene-pair quality control | `filter_pairs_by_bqc`, `is_confounded`, `prune_hub_genes`, `build_feature_matrix_aligned`, `drop_correlated_features` | Direction-aligned, de-redundant feature pairs |
+| 04 Model training | `VotingMethod`, `RFMethod`, `LassoMethod` | `REOModel` |
+| 05 Prediction & evaluation | `predict_reo`, `evaluate_reo`, `run_permutation_test` | Predictions, metrics, permutation p-value |
 
-## 预测与评估
+## Prediction & Evaluation
 
 ```julia
 pred = predict_reo(model, data, genes)
 metrics = evaluate_reo(model, data, genes, labels)
 ```
 
-`predict_reo` 返回：
+`predict_reo` returns:
 
-- `probs`：Lasso 使用 sigmoid 概率，Voting/RF 使用加权投票分数。
-- `preds`：阈值为 `0.5` 的布尔预测。
+- `probs` — Lasso uses sigmoid probabilities; Voting/RF use weighted vote scores.
+- `preds` — boolean predictions at threshold 0.5.
 
-`evaluate_reo` 返回：
+`evaluate_reo` returns:
 
-- `acc`：准确率。
-- `mcc`：Matthews correlation coefficient。
-- `auc`：二分类 AUC。
-- `probs` 和 `preds`：预测输出。
+- `acc` — accuracy.
+- `mcc` — Matthews Correlation Coefficient.
+- `auc` — binary AUC.
+- `probs` and `preds`.
 
-## 传统 TSP 方法
+## TSP Baselines
 
-包内提供三个基线方法：
+Three baseline methods are provided:
 
 ```julia
 cfg = REOConfig(low_rank_q=0.0, top_diff_n=500)
@@ -301,81 +312,76 @@ auctsp = fit_auctsp(data, labels, genes, cfg; k_max=9)
 evaluate_auctsp(auctsp, data, genes, labels)
 ```
 
-## REOConfig 参数说明
+## REOConfig Parameter Guide
 
-本文档按当前实现说明 `REOConfig` 参数的实际作用。重点注意：字段存在不等于训练代码已经读取，调参应以源码实际使用情况为准。
+This section documents `REOConfig` fields based on the current implementation.
+A field's existence does not guarantee the training code reads it; verify
+against the source when tuning.
 
-### 参数说明
+### Parameters
 
 #### `method`
 
-默认值为 `RFMethod`。只对 `fit_reo` 生效，用来选择 `VotingMethod`、`RFMethod` 或 `LassoMethod` 分支；TSP、k-TSP、AUC-TSP 不读取该参数。需要规则最透明时选 `VotingMethod`，需要树桩加权模型时选 `RFMethod`，需要稀疏线性权重时选 `LassoMethod`。
+Default: `RFMethod`.  Selects the training branch for `fit_reo`: `VotingMethod`,
+`RFMethod`, or `LassoMethod`.  Ignored by TSP / k-TSP / AUC-TSP.
 
 #### `low_rank_q`
 
-默认值为 `0.2`。用于低表达秩过滤，`fit_reo` 和 TSP 系列都会使用。推荐范围是 `0.0 <= low_rank_q < 1.0`；候选基因太少时降到 `0.1` 或 `0.0`，低表达噪声较多时可升到 `0.3` 左右。
+Default: `0.2`.  Low-expression rank filter threshold.  Used by `fit_reo` and
+TSP variants.  Range: `0.0 ≤ low_rank_q < 1.0`.
 
 #### `top_diff_n`
 
-默认值为 `5000`。用于保留两类平均秩差最大的前 N 个基因，`fit_reo` 和 TSP 系列都会使用。必须是正整数；值越大越慢，因为候选基因对规模约为 `N*(N-1)/2`。调试可用 `100-1000`，常规 REOB 可用 `1000-5000`，TSP 系列建议更小。
+Default: `5000`.  Number of top differentially-ranked genes.  Used by `fit_reo`
+and TSP variants.  Candidate pairs scale as ≈ N(N−1)/2.
 
 #### `bqc_threshold`
 
-默认值为 `3.0`。用于 REOB 主流程的 BQC 稳定翻转基因对过滤；Voting、RF、Lasso 都会间接受影响，TSP 系列不使用。该值越大越严格；BQC 后没有基因对时可降到 `2.0` 或 `1.0`，候选过多时可升高。
+Default: `3.0`.  Minimum enhanced-BQC score for pair retention.  REOB main
+pipeline only.  Higher is stricter.
 
 #### `p0_threshold`
 
-默认值为 `0.2`。用于要求对照组序关系远离 `0.5`，只在 REOB 主流程的 BQC 阶段生效。推荐范围是 `0.0 <= p0_threshold < 0.5`；默认相当于保留 `p0 <= 0.3` 或 `p0 >= 0.7` 的稳定关系。无基因对时降低，候选太多时升高。
+Default: `0.2`.  Minimum |p0 − 0.5| for control-group stability.  REOB main
+pipeline only.  Range: `0.0 ≤ p0_threshold < 0.5`.
 
 #### `p_val_cutoff`
 
-默认值为 `0.05`。仅当调用 `fit_reo(...; confounders=...)` 时生效，用于混淆因子审计。常用范围是 `0.01-0.1`；值越大，剔除与协变量相关的可疑基因对越多。
+Default: `0.05`.  Confounding-factor audit threshold.  Only when
+`fit_reo(...; confounders=...)` is called.  Range: `0.01–0.1`.
 
 #### `max_occurrence`
 
-默认值为 `2`。限制单个基因最多出现在多少个候选基因对中，只在 REOB 主流程生效。必须是正整数；解释性优先可用 `1-2`，最终特征太少时可升到 `3-5`。
+Default: `2`.  Max per-gene pair count.  REOB main pipeline only.  Range: `1–5`.
 
 #### `cor_threshold`
 
-默认值为 `0.90`。用于删除高度相关的二值 REO 特征，只在 REOB 主流程生效。推荐范围是 `0.8-0.99`；值越低剪枝越强，特征太少时升高。
+Default: `0.90`.  Correlation pruning threshold.  REOB main pipeline only.
+Range: `0.8–0.99`.
 
 #### `ss_iterations`
 
-默认值为 `1000`。RF 和 Lasso 会读取，用于子采样迭代次数；VotingMethod 不使用子采样，因此无需设置。调试可用 `5-50`，常规可用 `300-1000`；值越大结果越稳定，但运行越慢。
+Default: `1000`.  Stability-selection iterations (RF / Lasso).  Ignored by
+VotingMethod.
 
 #### `ss_ratio`
 
-默认值为 `0.8`。RF 和 Lasso 会读取，用于每轮分层子采样比例；VotingMethod 无需设置。推荐范围是 `0.5 < ss_ratio < 1.0`；小样本可用 `0.6-0.75` 保留 OOB 样本，不建议设为 `1.0`。
+Default: `0.8`.  Per-class sub-sampling ratio (RF / Lasso).  Ignored by
+VotingMethod.  Range: `0.5–1.0`.
 
 #### `ss_threshold`
 
-默认值为 `0.7`。当前只在 LassoMethod 中用于稳定性选择阈值；VotingMethod 和 RFMethod 都无需设置。推荐范围是 `0.0-1.0`；Lasso 选不到特征时降低，特征太多时升高。
+Default: `0.7`.  Stability-selection frequency threshold (Lasso only).
 
 #### `target_n`
 
-默认值为 `15`。当前 RF 和 Lasso 会读取；VotingMethod 不读取，因此不能用它直接控制 Voting 的最终特征数。必须是正整数，常用 `5-30`；RF 中也影响每轮森林规模，Lasso 中用于选择路径位置和 fallback 数量。
-
-#### `fisher_n_top`
-
-默认值为 `5000`。这是 Fisher 基因对筛选的预留参数；当前 `fit_reo` 主流程使用 BQC，不读取该字段，通常不用设置。
-
-#### `forest_trees`
-
-默认值为 `100`。这是 RF 树数量的预留参数；当前 RF 代码不读取，通常不用设置。
-
-#### `forest_depth`
-
-默认值为 `1`。这是 RF 深度的预留参数；当前 RF 固定使用树桩深度，不读取该字段。
-
-#### `lasso_lambda`
-
-默认值为 `:min`。这是 Lasso lambda 选择策略的预留参数；当前 Lasso 代码不读取，通常不用设置。
+Default: `15`.  Target feature count (RF / Lasso).  Ignored by VotingMethod.
 
 #### `verbose`
 
-默认值为 `false`。用于控制筛选、训练和部分评估日志。调试时设为 `true`，批量运行时保持 `false`。
+Default: `false`.  Print diagnostic messages when `true`.
 
-### 按算法推荐配置
+### Recommended Configurations
 
 #### VotingMethod
 
@@ -391,7 +397,8 @@ cfg = REOConfig(
 )
 ```
 
-说明：VotingMethod 当前不使用子采样，`ss_iterations`、`ss_ratio`、`ss_threshold` 无需设置；`target_n` 也不直接控制最终特征数。若候选特征超过 `128`，代码会先截取前 `128` 个再进入 Voting 搜索。
+VotingMethod does not use sub-sampling.  If more than 128 candidate features
+remain, only the first 128 are passed to the voting search.
 
 #### RFMethod
 
@@ -403,8 +410,6 @@ cfg = REOConfig(
     target_n = 15,
 )
 ```
-
-说明：RF 读取 `ss_iterations`、`ss_ratio`、`target_n`。当前不读取 `ss_threshold`、`forest_trees`、`forest_depth`。
 
 #### LassoMethod
 
@@ -418,8 +423,6 @@ cfg = REOConfig(
 )
 ```
 
-说明：Lasso 读取 `ss_iterations`、`ss_ratio`、`ss_threshold`、`target_n`。当前不读取 `lasso_lambda`。
-
 #### TSP / k-TSP / AUC-TSP
 
 ```julia
@@ -429,19 +432,23 @@ cfg = REOConfig(
 )
 ```
 
-说明：TSP 系列只使用 `low_rank_q`、`top_diff_n` 和预筛选日志相关的 `verbose`。`method`、BQC、`ss_`、`target_n` 等参数都不影响 TSP 系列；`fit_ktsp` 和 `fit_auctsp` 的对子数量由函数参数 `k_max` 控制。
+TSP variants use only `low_rank_q`, `top_diff_n`, and `verbose`.  The pair
+count for k-TSP / AUC-TSP is controlled by the `k_max` function argument.
 
-### 常见调参方向
+### Tuning Tips
 
-- BQC 后没有基因对：先降低 `bqc_threshold`，再降低 `p0_threshold`，必要时降低 `low_rank_q` 或增加 `top_diff_n`。
-- 运行太慢：优先降低 `top_diff_n`；RF/Lasso 可降低 `ss_iterations`。
-- 候选特征过多：升高 `bqc_threshold` 或 `p0_threshold`，降低 `max_occurrence` 或 `cor_threshold`。
-- 结果波动大：固定随机种子，并增加 `ss_iterations`。
+- **No pairs after BQC**: lower `bqc_threshold`, then `p0_threshold`; if still
+  empty, lower `low_rank_q` or increase `top_diff_n`.
+- **Too slow**: reduce `top_diff_n`; for RF/Lasso also reduce `ss_iterations`.
+- **Too many candidates**: raise `bqc_threshold` or `p0_threshold`; lower
+  `max_occurrence` or `cor_threshold`.
+- **Unstable results**: fix the random seed and increase `ss_iterations`.
 
-## 包测试
+## Testing
 
 ```bash
 julia --project=REOB -e 'using Pkg; Pkg.test()'
 ```
 
-测试使用 Julia 标准库 `Test`，以行为断言为主，避免依赖内部实现细节。
+Tests use Julia's standard `Test` library and assert on observable behaviour
+rather than internal implementation details.
