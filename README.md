@@ -61,8 +61,8 @@ The final classification rule is:
 $$
 \hat{y}(s)=
 \begin{cases}
-1, & \operatorname{score}(s) \ge 0.5,\\
-0, & \operatorname{score}(s) < 0.5.
+1, & \text{score}(s) \ge 0.5,\\
+0, & \text{score}(s) < 0.5.
 \end{cases}
 $$
 
