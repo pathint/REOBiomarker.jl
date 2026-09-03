@@ -44,14 +44,15 @@ makedocs(
     modules = [REOB],
     remotes = nothing,
     pages = [
-        "概览" => "index.md",
-        "API 参考" => "api.md",
+        "Overview" => "index.md",
+        "API Reference" => "api.md",
     ],
     checkdocs = :exports,
 )
 
-# Documenter 为版本化部署预留了 `siteinfo.js` 和 `versions.js` 引用。
-# 本项目当前是单版本本地预览，生成轻量占位文件可避免静态服务器 404 噪音。
+# Documenter expects siteinfo.js and versions.js for versioned deployments.
+# This project uses single-version local preview; writing lightweight
+# placeholders avoids 404 noise from static file servers.
 const BUILD_DIR = joinpath(@__DIR__, "build")
 write(
     joinpath(BUILD_DIR, "siteinfo.js"),
@@ -87,7 +88,7 @@ function write_favicon_ico(path::AbstractString)
     height = 16
     bitmap = IOBuffer()
 
-    # ICO 内部使用带 DIB 头的 BMP 数据，像素按 BGRA、从下到上写入。
+    # ICO files use a BMP payload with a DIB header; pixels are BGRA, bottom-to-top.
     write_le32(bitmap, 40)
     write_le32(bitmap, width)
     write_le32(bitmap, 2 * height)
