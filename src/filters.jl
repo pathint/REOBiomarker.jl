@@ -1,217 +1,161 @@
 # src/filters.jl
 
-using Statistics, StatsBase, HypothesisTests, Combinatorics
-
+using Statistics, StatsBase, HypothesisTests, ThreadsX, Combinatorics
 
 """
-    preprocess_filters(data, labels, gene_ids, cfg[, confounders])
+    preprocess_filters(data, labels, gene_ids, cfg, confounders=nothing) -> (final_pairs, X)
 
-根据 `REOConfig` 执行 REOB 预筛选流程。
-
-该函数依次执行低表达过滤、差异秩次过滤、BQC 基因对筛选、可选混淆因子
-审计、hub 基因剪枝和相关性剪枝，返回方向已对齐的候选基因对索引和
-样本 × 基因对的二值特征矩阵。
-
-# 参数
-
-- `data`：基因 × 样本表达矩阵。
-- `labels`：二分类标签，取值应为 `0` 和 `1`。
-- `gene_ids`：基因名称；当前预筛选仅保留该参数以匹配训练入口。
-- `cfg`：REOB 配置。
-- `confounders`：可选协变量向量列表，用于剔除与协变量显著相关的基因对。
-
-# 返回值
-
-`(pairs, X)`，其中 `pairs` 为基因行号元组，`X` 为样本 × 基因对特征矩阵。
+Run the full pre-filtering pipeline: low-expression removal, differential
+ranking, BQC pair filtering, optional confounding-factor audit, hub-gene
+pruning, feature-matrix construction, and correlation pruning.
 """
 function preprocess_filters(
-    data::Matrix{<:Real}, 
-    labels::AbstractVector, 
-    gene_ids::Vector, 
-    cfg::REOConfig, 
+    data::Matrix{<:Real},
+    labels::AbstractVector,
+    gene_ids::Vector,
+    cfg::REOConfig,
     confounders::Union{Nothing, Vector{<:AbstractVector}} = nothing
 )
-    # 1. 过滤低表达 (利用 cfg.low_rank_q)
+    # 1. Filter low-expression genes
+    cfg.verbose && println(">>> Filtering low-expression genes...")
     keep_low = filter_low_rank_genes(data, cfg.low_rank_q; verbose=cfg.verbose)
 
-    # 2. 差异秩次过滤 (利用 cfg.top_diff_n)
+    # 2. Differential rank filter
+    cfg.verbose && println(">>> Filtering by differential rank...")
     selected_genes = filter_diff_rank_genes(data, labels, keep_low;
                                             top_n=cfg.top_diff_n, verbose=cfg.verbose)
 
-    # 3. BQC 生物学稳定性审计，剔除组内序关系不稳定的基因对。
+    # 3. Generate all candidate gene pairs
     all_pairs = collect(combinations(selected_genes, 2))
-    pairs_initial, _, _ = filter_pairs_by_bqc_hierarchical(all_pairs, data, labels, keep_low, cfg::REOConfig)
+    cfg.verbose && println(">>> $(length(all_pairs)) candidate pairs generated.")
 
-	cfg.verbose && println(">>> Gene pairs filtered by BQC thresholds, remaining: $(length(pairs_initial)) pairs.")
+    # 3.1 BQC stability audit
+    pairs_initial = filter_pairs_by_bqc(all_pairs, data, labels, keep_low, cfg)
+    cfg.verbose && println(">>> After BQC filtering: $(length(pairs_initial)) pairs remain.")
 
-	length(pairs_initial) == 0 && error("0 gene pairs are left. Try to use less strict parameters, e.g. lower the values of 'bqc_threshold' or 'p0_threshold'.")
+    isempty(pairs_initial) && error("No gene pairs remain after BQC. Relax bqc_threshold or p0_threshold and retry.")
 
-    # 4. 混淆因子审计 (Confounding Factor Audit, 利用cfg.p_val_cutoff)
+    # 4. Confounding-factor audit
     if !isnothing(confounders) && !isempty(confounders)
-        cfg.verbose && println(">>> 正在针对 $(length(confounders)) 个混淆因子进行独立性审计...")
-        
+        cfg.verbose && println(">>> Auditing against $(length(confounders)) confounders...")
+
         keep_mask = fill(true, length(pairs_initial))
-        p_val_cutoff = cfg.p_val_cutoff # 从 cfg 中读取阈值
+        p_val_cutoff = cfg.p_val_cutoff
 
         for (i, pair) in enumerate(pairs_initial)
             g1_idx, g2_idx = pair
-            # 获取该对子在所有样本中的二值化序关系
-			a = @view data[g1_idx, :]
-			b = @view data[g2_idx, :]
+            reo_vec = data[g1_idx, :] .> data[g2_idx, :]
 
-			result = (a .> b) .| ((a .== b) .& rand(Bool, length(a)))
-            
             for cf_vec in confounders
                 if is_confounded(reo_vec, cf_vec, p_val_cutoff)
                     keep_mask[i] = false
-                    break # 只要与任何一个混淆因子相关，立即剔除
+                    break
                 end
             end
         end
-        
+
         n_removed = count(!, keep_mask)
         pairs_initial = pairs_initial[keep_mask]
-        cfg.verbose && println("    审计完成：剔除了 $n_removed 个与协变量显著相关的基因对。")
+        cfg.verbose && println("    Removed $n_removed pairs correlated with covariates.")
     end
 
-    # 5. 去中心化 (利用 cfg.max_occurrence)
-    pairs_pruned = prune_hub_genes(pairs_initial, cfg.max_occurrence, verbose = cfg.verbose)
+    # 5. Hub-gene pruning
+    pairs_pruned = prune_hub_genes(pairs_initial, cfg.max_occurrence, verbose=cfg.verbose)
 
-    # 6. 构建方向与正类对齐的特征矩阵。
+    # 6. Build direction-aligned binary feature matrix
     X_initial, pairs_pruned = build_feature_matrix_aligned(data, pairs_pruned, labels)
-    
-    # 7. 相关性剪枝 (利用 cfg.cor_threshold)
+
+    # 7. Correlation pruning
     final_pairs, X_final = drop_correlated_features(X_initial, pairs_pruned, cfg.cor_threshold)
 
     return final_pairs, X_final
 end
 
-function check_task_difficulty(
-    data::Matrix{<:Real}, 
-    labels::AbstractVector, 
-    gene_ids::Vector, 
-    cfg::REOConfig 
-)
-    # 1. 过滤低表达 (利用 cfg.low_rank_q)
-    keep_low = filter_low_rank_genes(data, cfg.low_rank_q; verbose=cfg.verbose)
-
-    # 2. 差异秩次过滤 (利用 cfg.top_diff_n)
-    selected_genes = filter_diff_rank_genes(data, labels, keep_low;
-                                            top_n=cfg.top_diff_n, verbose=cfg.verbose)
-
-    # 3. BQC 生物学稳定性审计，剔除组内序关系不稳定的基因对。
-    all_pairs = collect(combinations(selected_genes, 2))
-    _, tdi_score, bqc_scores = filter_pairs_by_bqc_hierarchical(all_pairs, data, labels, keep_low, cfg::REOConfig)
-	return tdi_score, bqc_scores
-end
-
 """
-    filter_low_rank_genes(data, threshold=0.2; verbose=false)
+    filter_low_rank_genes(data, threshold=0.2; verbose=false) -> Vector{Int}
 
-剔除跨样本中位表达秩分位不高于 `threshold` 的基因。
-
-返回保留基因在 `data` 中的行号。
+Remove genes whose median within-sample percentile rank falls below `threshold`.
 """
-function filter_low_rank_genes(data::Matrix{<:Real}, threshold=0.2; verbose=false)
+function filter_low_rank_genes(data::Matrix{Float64}, threshold=0.2; verbose=false)
     n_genes, n_samples = size(data)
-    # 计算每个样本内基因的百分比秩次 (0~1)
     percentile_ranks = Matrix{Float64}(undef, n_genes, n_samples)
     Threads.@threads for j in 1:n_samples
         percentile_ranks[:, j] .= tiedrank(data[:, j]) ./ n_genes
     end
-    
-    # 筛选逻辑：中位秩次处于底部 threshold 的基因被剔除
+
     keep_indices = findall(i -> median(percentile_ranks[i, :]) > threshold, 1:n_genes)
-    
-    verbose && println("低表达筛选：从 $(n_genes) 个基因中保留了 $(length(keep_indices)) 个。")
+    verbose && println("  Low-expression filter: kept $(length(keep_indices)) / $n_genes genes.")
     return keep_indices
 end
 
 """
-    filter_diff_rank_genes(data, labels, gene_indices; top_n=500, verbose=false)
+    filter_diff_rank_genes(data, labels, gene_indices; top_n=500, verbose=false) -> Vector{Int}
 
-在指定基因集合内计算两类样本的平均秩分位差异，返回差异最大的
-`top_n` 个基因行号。
+Retain the `top_n` genes with the largest absolute mean percentile-rank
+difference between the two classes.
 """
-function filter_diff_rank_genes(data::Matrix{<:Real}, labels::AbstractVector, gene_indices::Vector{Int}; top_n=500, verbose=false)
+function filter_diff_rank_genes(data::Matrix{Float64}, labels::AbstractVector, gene_indices::Vector{Int}; top_n=500, verbose=false)
     n_samples = size(data, 2)
     n_genes_subset = length(gene_indices)
-    
-    # 仅对初步保留的基因计算秩次
+
     sub_data = data[gene_indices, :]
     percentile_ranks = Matrix{Float64}(undef, n_genes_subset, n_samples)
     for j in 1:n_samples
         percentile_ranks[:, j] .= tiedrank(sub_data[:, j]) ./ n_genes_subset
     end
-    
-    idx1 = findall(x -> x == 1, labels)
-    idx0 = findall(x -> x == 0, labels)
-    
-    # 计算两组间的均值差异 (Absolute Mean Difference)
+
+    idx1 = findall(==(1), labels)
+    idx0 = findall(==(0), labels)
+
     diffs = [abs(mean(percentile_ranks[i, idx1]) - mean(percentile_ranks[i, idx0])) for i in 1:n_genes_subset]
-    
-    # 选取差异最大的前 top_n 个基因
+
     p = sortperm(diffs, rev=true)
     selected_internal_indices = p[1:min(top_n, length(p))]
-    
+
     final_indices = gene_indices[selected_internal_indices]
-    verbose && println("差异筛选：保留了前 $(length(final_indices)) 个高差异基因。")
+    verbose && println("  Differential filter: kept $(length(final_indices)) genes.")
     return final_indices
 end
 
 """
     get_top_pairs_parallel_fisher(data, labels, gene_indices; n_top=5000, verbose=false)
 
-使用 Fisher 精确检验按显著性筛选候选基因对。
-
-该函数保留为底层筛选工具；REOB 默认训练流程使用 BQC 筛选。
+Parallel Fisher exact test to rank gene pairs by discriminative power.
 """
-function get_top_pairs_parallel_fisher(data::Matrix{<:Real}, labels::AbstractVector, gene_indices::Vector{Int}; n_top=5000, verbose=false)
-    #idx1 = findall(x -> x == 1, labels)
-    #idx0 = findall(x -> x == 0, labels)
+function get_top_pairs_parallel_fisher(data::Matrix{Float64}, labels::AbstractVector, gene_indices::Vector{Int}; n_top=5000, verbose=false)
     idx1 = findall(==(1), labels)
     idx0 = findall(==(0), labels)
     n1, n0 = length(idx1), length(idx0)
-    
-    # 生成所有可能的基因对组合
+
     all_pairs = collect(combinations(gene_indices, 2))
     n_pairs = length(all_pairs)
     p_values = Vector{Float64}(undef, n_pairs)
-    
-    # 并行计算每对基因的 Fisher 检验 P 值
+
     Threads.@threads for i in 1:n_pairs
         g1, g2 = all_pairs[i]
-        # 统计在 Label=1 中 g1 > g2 的数量
-		a = @view data[g1, idx1]
-		b = @view data[g2, idx1]
-        #c1 = sum(data[g1, idx1] .> data[g2, idx1])
-		c1 = sum((a .> b) .| ((a .== b) .& rand(Bool, length(a))))
-        # 统计在 Label=0 中 g1 > g2 的数量
-		a = @view data[g1, idx0]
-		b = @view data[g2, idx0]
-        #c0 = sum(data[g1, idx0] .> data[g2, idx0])
-		c0 = sum((a .> b) .| ((a .== b) .& rand(Bool, length(a))))
-        # 构建 2x2 混淆矩阵
+        c1 = sum(data[g1, idx1] .> data[g2, idx1])
+        c0 = sum(data[g1, idx0] .> data[g2, idx0])
+
+        # 2x2 contingency table:
         #          g1>g2  g1<=g2
         # Label 1:  c1    n1-c1
         # Label 0:  c0    n0-c0
         ft = FisherExactTest(c1, n1-c1, c0, n0-c0)
         p_values[i] = pvalue(ft)
     end
-    
-    # 按 P 值升序排列
+
     sp = sortperm(p_values)
     top_indices = sp[1:min(n_top, n_pairs)]
-    
-    verbose && println("Fisher exact test：获得 $(min(n_top, n_pairs)) 基因对。")
+
+    verbose && println("  Fisher exact test: retained $(min(n_top, n_pairs)) pairs.")
     return all_pairs[top_indices], p_values[top_indices]
 end
 
-
 """
-    filter_pairs_by_bqc(pairs, data, labels, keep_low, cfg)
+    filter_pairs_by_bqc(pairs, data, labels, keep_low, cfg) -> Vector
 
-使用贝叶斯质量控制（BQC）过滤并排序候选基因对。
+Rank gene pairs by the enhanced Bayesian Quality Control score.  Pairs must
+pass both the BQC threshold and the p0 stability threshold.
 """
 function filter_pairs_by_bqc(pairs, data, labels, keep_low, cfg::REOConfig)
     idx0 = findall(==(0), labels)
@@ -219,231 +163,125 @@ function filter_pairs_by_bqc(pairs, data, labels, keep_low, cfg::REOConfig)
     n0 = length(idx0)
     n1 = length(idx1)
 
-    # 1. 并行估计全局 Tau
-    cfg.verbose && println(">>> 正在并行估计全局 Tau 值...")
-    tau_res = estimate_global_tau_parallel(data[keep_low,:]; verbose=cfg.verbose)
+    # 1. Estimate global tau
+    cfg.verbose && println(">>> Estimating global tau...")
+    tau_res = estimate_global_tau_parallel(data[keep_low, :])
     tau = tau_res.mean
 
     bqc_threshold = cfg.bqc_threshold
     p0_threshold  = cfg.p0_threshold
-    threshold_dict = generate_bqc_threshold_dict(n0, n1, tau, bqc_threshold, p0_threshold; verbose=cfg.verbose)
-    cfg.verbose && println(">>> 基因对筛选阈值条件，共 $(length(threshold_dict)) 条记录。")
-    pairs_initial = filter_pairs_with_dict(pairs, data, labels, threshold_dict; verbose = cfg.verbose)
+    threshold_dict = generate_bqc_threshold_dict(n0, n1, tau, bqc_threshold, p0_threshold)
+    cfg.verbose && println(">>> BQC threshold dictionary: $(length(threshold_dict)) entries.")
+    pairs_initial = filter_pairs_with_dict(pairs, data, labels, threshold_dict; verbose=cfg.verbose)
 
     n_pairs = length(pairs_initial)
-    # 2. 预分配结果数组 (存储 pair, score, p0_diff)
-    # 使用 Thread-local 模式或直接并行填充然后过滤
     results = Vector{NamedTuple{(:pair, :score, :p0_diff), Tuple{Tuple{Int, Int}, Float64, Float64}}}(undef, n_pairs)
-    
-    cfg.verbose && println(">>> 开始并行计算每个基因对的 BQC 分数 (对子总数: $n_pairs)...")
 
-    # 3. 并行计算分数
+    cfg.verbose && println(">>> Computing BQC scores for $n_pairs pairs...")
+
+    # 2. Parallel BQC scoring
     Threads.@threads for i in 1:n_pairs
         g1, g2 = pairs_initial[i]
-        
-        # 快速计算频数 (使用 @views 避免内存拷贝)
-        @views begin
-			a = data[g1, idx0]
-			b = data[g2, idx0]
-			k0 = sum((a .> b) .| ((a .== b) .& rand(Bool, length(a))))
-		end
+
+        @views k0 = sum(data[g1, idx0] .> data[g2, idx0])
         p0 = k0 / n0
         p0_diff = abs(p0 - 0.5)
 
-        #@views k1 = sum(data[g1, idx1] .> data[g2, idx1])
-        @views begin
-			a = data[g1, idx1]
-			b = data[g2, idx1]
-			k1 = sum((a .> b) .| ((a .== b) .& rand(Bool, length(a))))
-		end
-        
-        # 调用您实现的增强型 BQC 函数
+        @views k1 = sum(data[g1, idx1] .> data[g2, idx1])
+
         score = calculate_enhanced_bqc(k1, n1, p0, tau)
-        
+
         results[i] = (pair = (g1, g2), score = score, p0_diff = p0_diff)
     end
 
-
-    # 5. 两级排序：
-    # 第一关键字：score (倒序)
-    # 第二关键字：p0_diff (倒序)
+    # 3. Two-level sort: primary by score (desc), secondary by p0_diff (desc)
     sort!(results, by = x -> (x.score, x.p0_diff), rev = true)
 
-    # 6. 提取并返回排序后的基因对
     sorted_pairs = [x.pair for x in results]
 
     return sorted_pairs
 end
 
-
-function filter_pairs_by_bqc_hierarchical(pairs, data, labels, keep_low, cfg::REOConfig)
-    # 1. 识别两组的样本索引与总数
-    idx0 = findall(==(0), labels) # control
-    idx1 = findall(==(1), labels) # case
-    n0 = length(idx0)
-    n1 = length(idx1)
-    
-	if isnothing(cfg.global_alpha)
-    	# 2. 估计全局 Alpha 
-    	cfg.verbose && println(">>> Estimate the global alpha value ...")
-    	counts_freq = calculate_reo_distribution(data[keep_low,:]; verbose = cfg.verbose)
-    	counts_emp  = symmetrize_and_to_pdf(counts_freq; verbose = cfg.verbose)
-    	beta_res, probit_res = fit_distributions(counts_emp; verbose = cfg.verbose)
-    	alpha_global = beta_res.alpha 
-	else
-		alpha_global = cfg.global_alpha
-	end
-
-    # 提取过滤阈值
-    bqc_threshold = cfg.bqc_threshold
-    p0_threshold  = cfg.p0_threshold
-
-    threshold_dict = generate_bqc_threshold_dict(n0, n1, alpha_global, bqc_threshold, p0_threshold; verbose=cfg.verbose)
-    cfg.verbose && println(">>> Filtering gene pairs: $(length(threshold_dict)) records in precomputed dictinoary.")
-    pairs_initial = filter_pairs_with_dict(pairs, data, labels, threshold_dict; verbose = cfg.verbose)
-
-
-    cfg.verbose && println(">>> 基因对筛选阈值条件，共 $(length(threshold_dict)) 条记录。")
-    n_pairs = length(pairs_initial)
-    results = Vector{NamedTuple{(:pair, :score, :p0, :p1, :p0_post, :p0_diff), 
-								Tuple{Tuple{Int, Int}, Float64, Float64, Float64, Float64, Float64}}}(undef, n_pairs)
-    
-    cfg.verbose && println(">>> Start to calcualte the BQC score ...")
-
-    # 3. 并行计算每个基因对的分数
-    Threads.@threads for i in 1:n_pairs
-        g1, g2 = pairs_initial[i]
-        
-        # 快速计算两组的阳性频数
-        #@views k0 = sum(data[g1, idx0] .> data[g2, idx0])
-        #@views k1 = sum(data[g1, idx1] .> data[g2, idx1])
-        @views begin
-			a = data[g1, idx0]
-			b = data[g2, idx0]
-			k0 = sum((a .> b) .| ((a .== b) .& rand(Bool, length(a))))
-		end
-
-        @views begin
-			a = data[g1, idx1]
-			b = data[g2, idx1]
-			k1 = sum((a .> b) .| ((a .== b) .& rand(Bool, length(a))))
-		end
-        
-        # 调用全新的层级增强 BQC 函数
-        score, p0_post_mean = calculate_enhanced_bqc_hierarchical(
-            k0, n0, k1, n1, alpha_global; n_power=1
-        )
-        
-        p0_diff = abs(p0_post_mean - 0.5)
-        results[i] = (pair = (g1, g2), score = score, p0 = k0/n0, p1 = k1/n1, p0_post = p0_post_mean, p0_diff = p0_diff)
-    end
-
-	# 4. 调用 TDI 指标评估函数，捕获评估得分和用于绘图的全部有效分数
-	tdi_score, plot_scores = calculate_tdi_metrics(results, bqc_threshold, p0_threshold; top_k=50, verbose = cfg.verbose)
-	
-    # 5. 同时基于 score（>=）和 p0_diff（>）进行双重硬门槛过滤
-    valid_results = filter(x -> x.score >= bqc_threshold && x.p0_diff > p0_threshold, results)
-    
-    # 5. 执行两级排序：
-    # 第一关键字：score 倒序
-    # 第二关键字：p0_diff 倒序
-    sort!(valid_results, by = x -> (x.score, x.p0_diff), rev = true)
-	#println(valid_results)
-    cfg.verbose && println(">>> Done with BQC filtering. Total # pairs: $n_pairs, retained: $(length(valid_results))")
-
-    # 6. 返回排序后的最佳基因对
-    return [x.pair for x in valid_results], tdi_score, plot_scores
-end
-
-"""
-    filter_pairs_with_dict(pairs, data, labels, threshold_dict; verbose=false)
-
-使用 BQC 临界数字典筛选候选基因对。
-
-`threshold_dict` 的键是对照组中 `g1 > g2` 的次数 `k0`，值是病例组中
-达到阈值所需的最小 `k1`。函数返回通过该阈值判断的候选子集。
-"""
 function filter_pairs_with_dict(pairs, data, labels, threshold_dict::Dict; verbose = false)
     idx0 = findall(==(0), labels)
     idx1 = findall(==(1), labels)
-    n0 = length(idx0)/2 
-    # 预分配结果容器
+    n0 = length(idx0) / 2
+
     keep_mask = fill(false, length(pairs))
-    
+
     Threads.@threads for i in 1:length(pairs)
         g1, g2 = pairs[i]
-        
-        # 1. 快速计算频数
-        #k0 = sum(data[g1, idx0] .> data[g2, idx0])
-        @views begin
-			a = data[g1, idx0]
-			b = data[g2, idx0]
-			k0 = sum((a .> b) .| ((a .== b) .& rand(Bool, length(a))))
-		end
-        
-        # 2. 查字典：如果 k0 不在字典里，说明 p0 不够稳，直接跳过
+        k0 = sum(data[g1, idx0] .> data[g2, idx0])
+
         limit = get(threshold_dict, k0, nothing)
-        
+
         if !isnothing(limit)
-            #k1 = sum(data[g1, idx1] .> data[g2, idx1])
-			@views begin
-				a = data[g1, idx1]
-				b = data[g2, idx1]
-				k1 = sum((a .> b) .| ((a .== b) .& rand(Bool, length(a))))
-			end
-            
-            # 3. 极速判断是否落入贝叶斯显著区间
-			if (k0 < n0 && k1 >= limit) || (k0 > n0 && k1 <= limit)
+            k1 = sum(data[g1, idx1] .> data[g2, idx1])
+            if (k0 < n0 && k1 >= limit) || (k0 > n0 && k1 <= limit)
                 keep_mask[i] = true
             end
         end
     end
-    
-    verbose && println("    BQC过滤完成：保留 $(sum(keep_mask)) 个稳定翻转基因对。")
+
+    verbose && println("    BQC dictionary filter: retained $(sum(keep_mask)) pairs.")
     return pairs[keep_mask]
 end
-
 
 """
     prune_hub_genes(pairs, max_occurrence=2; verbose=false)
 
-限制同一基因在候选基因对中的出现次数，降低 hub 基因造成的过拟合风险。
+Prevent any single gene from appearing in more than `max_occurrence` pairs.
 """
 function prune_hub_genes(pairs, max_occurrence=2; verbose = false)
     gene_counts = Dict{Int, Int}()
     final_pairs = []
-    
+
     for (g1, g2) in pairs
         c1 = get(gene_counts, g1, 0)
         c2 = get(gene_counts, g2, 0)
-        
+
         if c1 < max_occurrence && c2 < max_occurrence
             push!(final_pairs, (g1, g2))
             gene_counts[g1] = c1 + 1
             gene_counts[g2] = c2 + 1
         end
     end
-	verbose && println("After pruning: 剩余 $(length(final_pairs)) 基因对。")
+
+    verbose && println("  After hub pruning: $(length(final_pairs)) pairs remain.")
     return final_pairs
 end
 
 """
-    build_feature_matrix_aligned(data, pairs, labels)
+    build_feature_matrix(data, pairs) -> BitMatrix
 
-构建方向与正类对齐的二值特征矩阵。
-
-若某个基因对 `g1 > g2` 在正类中出现频率低于负类，则翻转为
-`g2 > g1`，使每个特征的 `true` 值尽量指向正类。
+Convert gene-pair orderings (A > B) into a binary feature matrix.
 """
-function build_feature_matrix_aligned(data::Matrix{<:Real}, pairs, labels::AbstractVector)
+function build_feature_matrix(data::Matrix{Float64}, pairs)
     n_samples = size(data, 2)
     n_pairs = length(pairs)
-    
-    # 预分配结果
+    X = BitArray(undef, (n_samples, n_pairs))
+
+    Threads.@threads for j in 1:n_pairs
+        g1, g2 = pairs[j]
+        @views X[:, j] .= data[g1, :] .> data[g2, :]
+    end
+    return X
+end
+
+"""
+    build_feature_matrix_aligned(data, pairs, labels) -> (X, new_pairs)
+
+Build a binary feature matrix with direction aligned so that `g1 > g2`
+correlates with the positive class.  Returns the matrix and the (possibly
+flipped) pair indices.
+"""
+function build_feature_matrix_aligned(data::Matrix{Float64}, pairs, labels::AbstractVector)
+    n_samples = size(data, 2)
+    n_pairs = length(pairs)
+
     X = BitArray(undef, (n_samples, n_pairs))
     new_pairs = Vector{Tuple{Int, Int}}(undef, n_pairs)
 
-    # 获取类别索引
     pos_idx = findall(==(1), labels)
     neg_idx = findall(==(0), labels)
     n_pos = length(pos_idx)
@@ -451,132 +289,83 @@ function build_feature_matrix_aligned(data::Matrix{<:Real}, pairs, labels::Abstr
 
     Threads.@threads for j in 1:n_pairs
         g1, g2 = pairs[j]
-        
-        # 计算在两组中 g1 > g2 出现的频率
-        #@views p_pos = sum(data[g1, pos_idx] .> data[g2, pos_idx]) / n_pos
-        #@views p_neg = sum(data[g1, neg_idx] .> data[g2, neg_idx]) / n_neg
-        @views begin
-			a = data[g1, pos_idx]
-			b = data[g2, pos_idx]
-			p_pos = sum((a .> b) .| ((a .== b) .& rand(Bool, length(a)))) / n_pos
-		end
-        @views begin
-			a = data[g1, neg_idx]
-			b = data[g2, neg_idx]
-			p_neg = sum((a .> b) .| ((a .== b) .& rand(Bool, length(a)))) / n_neg
-		end
 
-        # 核心逻辑：如果 g1 > g2 在正类中出现的概率更低，则翻转这对基因
+        @views p_pos = sum(data[g1, pos_idx] .> data[g2, pos_idx]) / n_pos
+        @views p_neg = sum(data[g1, neg_idx] .> data[g2, neg_idx]) / n_neg
+
         if p_pos < p_neg
-            actual_g1, actual_g2 = g2, g1
             new_pairs[j] = (g2, g1)
         else
-            actual_g1, actual_g2 = g1, g2
             new_pairs[j] = (g1, g2)
         end
 
-        # 填充特征矩阵
-        #@views X[:, j] .= data[actual_g1, :] .> data[actual_g2, :]
-        @views begin
-			a = data[actual_g1, :]
-			b = data[actual_g2, :]
-			X[:, j] .=  (a .> b) .| ((a .== b) .& rand(Bool, length(a)))
-		end
+        @views X[:, j] .= data[new_pairs[j][1], :] .> data[new_pairs[j][2], :]
     end
 
     return X, new_pairs
 end
 
 """
-    drop_correlated_features(X, pairs, threshold=0.95)
+    drop_correlated_features(X, pairs, threshold=0.95) -> (pairs, X)
 
-按特征相关系数阈值剔除冗余基因对。
+Remove features whose pairwise Pearson correlation exceeds `threshold`.
 """
 function drop_correlated_features(X::AbstractMatrix, pairs, threshold=0.95)
     n_features = size(X, 2)
     keep = trues(n_features)
-    # 计算相关系数矩阵
     cor_mat = cor(X)
-    
+
     for i in 1:n_features
-        if !keep[i] continue end
+        !keep[i] && continue
         for j in (i+1):n_features
             if keep[j] && abs(cor_mat[i, j]) > threshold
                 keep[j] = false
             end
         end
     end
-    
+
     return pairs[keep], X[:, keep]
 end
 
-
-
 """
-    is_confounded(reo_vec, cf_vec, p_threshold)
+    is_confounded(reo_vec, cf_vec, p_threshold) -> Bool
 
-判断一个基因对序关系是否与混淆因子显著相关。
-
-连续协变量使用 Welch t 检验，离散协变量使用卡方独立性检验；无法可靠计算
-时返回 `false`，避免因协变量分组过小误删特征。离散协变量支持字符串、
-符号等未预先整数编码的分类值。
+Test whether a gene-pair ordering is significantly associated with a
+confounding variable (continuous → Welch t-test, categorical → chi-squared).
 """
-function is_confounded(reo_vec::AbstractVector{Bool}, cf_vec::AbstractVector, p_threshold::Float64)
-    # 1. 如果混淆因子是连续变量 (如Age)
+function is_confounded(reo_vec::BitVector, cf_vec::AbstractVector, p_threshold::Float64)
     if eltype(cf_vec) <: AbstractFloat
-        # 使用不平衡方差 T 检验 (Welch's T-test)
-        # 比较“序关系为0”和“序关系为1”的两组样本在混淆因子上的均值差异
         group0 = cf_vec[reo_vec .== 0]
         group1 = cf_vec[reo_vec .== 1]
-        
-        # 鲁棒性检查：如果某一组样本太少或完全没有变异，视为无法审计（或保守剔除）
-        if length(group0) < 5 || length(group1) < 5 return false end
-        if std(group0) ≈ 0 && std(group1) ≈ 0 return false end
-        
+
+        length(group0) < 5 || length(group1) < 5 && return false
+        std(group0) ≈ 0 && std(group1) ≈ 0 && return false
+
         return pvalue(UnequalVarianceTTest(group0, group1)) < p_threshold
-
-    # 2. 如果混淆因子是离散/分类型变量 (如 Sex, Batch, Center)
     else
-        # 构建 2 x K 列联表 (K 是分类数量)
-        # 行：REO (0/1), 列：Confunder Categories
-        categories = unique(cf_vec)
-        length(categories) > 1 || return false
-
-        cf_to_col = Dict{Any, Int}(category => i for (i, category) in enumerate(categories))
-        tbl = zeros(Int, 2, length(categories))
-        for (reo, cf) in zip(reo_vec, cf_vec)
-            tbl[reo ? 2 : 1, cf_to_col[cf]] += 1
-        end
-        
-        # 使用卡方独立性检验 (ChisqTest)
-        # 如果样本量极小，可考虑在此处扩展为 Fisher 精确检验
+        tbl = counts(reo_vec, cf_vec)
         try
             return pvalue(ChisqTest(tbl)) < p_threshold
         catch
-            return false # 如果由于维度问题计算失败，默认通过
+            return false
         end
     end
 end
 
 """
-    filter_genes(data, labels, gene_ids, cfg)
+    filter_genes(data, labels, gene_ids, cfg) -> Vector{Int}
 
-执行 TSP 系列模型共用的基因级预筛选。
-
-该函数只返回基因行号，不构建基因对或特征矩阵；完整 REOB 预筛选请使用
-[`preprocess_filters`](@ref)。
+Gene-level pre-filtering for TSP-family methods (low-expression + differential
+rank filtering only, no BQC).
 """
 function filter_genes(
-    data::Matrix{<:Real}, 
-    labels::AbstractVector, 
-    gene_ids::Vector, 
-    cfg::REOConfig 
+    data::Matrix{<:Real},
+    labels::AbstractVector,
+    gene_ids::Vector,
+    cfg::REOConfig
 )
-    # 1. 过滤低表达 (利用 cfg.low_rank_q)
     keep_low = filter_low_rank_genes(data, cfg.low_rank_q; verbose=cfg.verbose)
-
-    # 2. 差异秩次过滤 (利用 cfg.top_diff_n)
     selected_genes = filter_diff_rank_genes(data, labels, keep_low;
                                             top_n=cfg.top_diff_n, verbose=cfg.verbose)
-	return selected_genes
+    return selected_genes
 end
