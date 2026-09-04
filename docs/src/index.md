@@ -1,4 +1,4 @@
-# REOB.jl
+# REOBiomarker.jl
 
 *Relative Expression Ordering-based Biomarker Identification*
 
@@ -183,7 +183,7 @@ genes::Vector     # gene names, one per row of data
 ## Training
 
 ```julia
-using REOB
+using REOBiomarker
 
 data, labels, genes = generate_test_data(1000, 200)
 cfg = REOConfig(
