@@ -1,4 +1,4 @@
-using REOB
+using REOBiomarker
 using Test
 using Statistics
 
@@ -9,14 +9,14 @@ data, labels, genes = generate_test_data(1000, 200)
 @testset "REOB full pipeline" begin
 
     @testset "Low-level filter functions (filters.jl)" begin
-        keep_low = REOB.filter_low_rank_genes(data, 0.1)
+        keep_low = REOBiomarker.filter_low_rank_genes(data, 0.1)
         @test length(keep_low) <= 1000
         @test length(keep_low) > 0
 
-        keep_diff = REOB.filter_diff_rank_genes(data, labels, keep_low, top_n=100)
+        keep_diff = REOBiomarker.filter_diff_rank_genes(data, labels, keep_low, top_n=100)
         @test length(keep_diff) <= 100
 
-        pairs, pvals = REOB.get_top_pairs_parallel_fisher(data, labels, keep_diff, n_top=50)
+        pairs, pvals = REOBiomarker.get_top_pairs_parallel_fisher(data, labels, keep_diff, n_top=50)
         @test length(pairs) > 0
         @test pvals[1] <= pvals[end]
     end
@@ -88,7 +88,7 @@ data, labels, genes = generate_test_data(1000, 200)
                         bqc_threshold=1.0, p0_threshold=0.05, verbose=false)
         model = fit_reo(data, labels, genes, cfg)
 
-        perm_res = REOB.fast_permutation_test(model, data, labels, String.(genes), n_perms=10)
+        perm_res = REOBiomarker.fast_permutation_test(model, data, labels, String.(genes), n_perms=10)
         @test haskey(perm_res, :p_value)
         @test length(perm_res.null_dist) == 10
     end
