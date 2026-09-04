@@ -1,5 +1,5 @@
 using Documenter
-using REOB
+using REOBiomarker
 
 const DOCS_ASSETS = [
     Documenter.RawHTMLHeadContent(
@@ -33,7 +33,7 @@ const DOCS_ASSETS = [
 ]
 
 makedocs(
-    sitename = "REOB.jl",
+    sitename = "REOBiomarker.jl",
     format = Documenter.HTML(
         prettyurls = get(ENV, "CI", "false") == "true",
         edit_link = nothing,
@@ -41,7 +41,7 @@ makedocs(
         inventory_version = "0.1.0",
         assets = DOCS_ASSETS,
     ),
-    modules = [REOB],
+    modules = [REOBiomarker],
     remotes = nothing,
     pages = [
         "Overview" => "index.md",
