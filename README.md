@@ -33,7 +33,7 @@ REOB supports three classification strategies:
   sample score is
 
 $$
-\text{score}(s) = \frac{1}{n}\sum_{i=1}^{n} x_i(s) + b
+\operatorname{score}(s) = \frac{1}{n}\sum_{i=1}^{n} x_i(s) + b
 $$
 
   where $b$ is a bias calibrated during training; when $b=0$ this reduces to
@@ -43,7 +43,7 @@ $$
   feature importance as weights:
 
 $$
-\text{score}(s) = \sum_{i=1}^{n} w_i x_i(s), \qquad
+\operatorname{score}(s) = \sum_{i=1}^{n} w_i x_i(s), \qquad
 w_i \ge 0,\quad \sum_{i=1}^{n} w_i = 1
 $$
 
@@ -51,8 +51,8 @@ $$
   (sigmoid) output:
 
 $$
-\text{score}(s) =
-\sigma\left(\sum_{i=1}^{n} w_i x_i(s) + b\right), \qquad
+\operatorname{score}(s) =
+\sigma\!\left(\sum_{i=1}^{n} w_i x_i(s) + b\right), \qquad
 \sigma(z)=\frac{1}{1+\exp(-z)}
 $$
 
@@ -61,8 +61,8 @@ The final classification rule is:
 $$
 \hat{y}(s)=
 \begin{cases}
-1, & \text{score}(s) \ge 0.5,\\
-0, & \text{score}(s) < 0.5.
+1, & \operatorname{score}(s) \ge 0.5,\\
+0, & \operatorname{score}(s) < 0.5.
 \end{cases}
 $$
 
@@ -77,7 +77,7 @@ All training and prediction functions expect three objects:
 ## Quick Start
 
 ```julia
-using REOB
+using REOBiomarker
 
 data, labels, genes = generate_test_data(1000, 200)
 
@@ -376,7 +376,7 @@ $$
 ## 快速开始
 
 ```julia
-using REOB
+using REOBiomarker
 
 # 生成模拟数据
 data, labels, genes = generate_test_data(1000, 200)
