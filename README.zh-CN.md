@@ -196,18 +196,6 @@ julia --project=REOBiomarker -e 'using Pkg; Pkg.test()'
 
 默认值为 `0.90`。用于删除高度相关的二值 REO 特征，只在 REOBiomarker 主流程生效。推荐范围是 `0.8-0.99`；值越低剪枝越强，特征太少时升高。
 
-#### `ss_iterations`
-
-默认值为 `1000`。RF 和 Lasso 会读取，用于子采样迭代次数；VotingMethod 不使用子采样，因此无需设置。调试可用 `5-50`，常规可用 `300-1000`；值越大结果越稳定，但运行越慢。
-
-#### `ss_ratio`
-
-默认值为 `0.8`。RF 和 Lasso 会读取，用于每轮分层子采样比例；VotingMethod 无需设置。推荐范围是 `0.5 < ss_ratio < 1.0`；小样本可用 `0.6-0.75` 保留 OOB 样本，不建议设为 `1.0`。
-
-#### `ss_threshold`
-
-默认值为 `0.7`。当前只在 LassoMethod 中用于稳定性选择阈值；VotingMethod 和 RFMethod 都无需设置。推荐范围是 `0.0-1.0`；Lasso 选不到特征时降低，特征太多时升高。
-
 #### `target_n`
 
 默认值为 `15`。当前 RF 和 Lasso 会读取；VotingMethod 不读取，因此不能用它直接控制 Voting 的最终特征数。必须是正整数，常用 `5-30`；RF 中也影响每轮森林规模，Lasso 中用于选择路径位置和 fallback 数量。
@@ -216,62 +204,6 @@ julia --project=REOBiomarker -e 'using Pkg; Pkg.test()'
 #### `verbose`
 
 默认值为 `false`。用于控制筛选、训练和部分评估日志。调试时设为 `true`，批量运行时保持 `false`。
-
-### 按算法推荐配置
-
-#### VotingMethod
-
-```julia
-cfg = REOConfig(
-    method = VotingMethod,
-    low_rank_q = 0.2,
-    top_diff_n = 1000,
-    bqc_threshold = 2.0,
-    p0_threshold = 0.1,
-    max_occurrence = 2,
-    cor_threshold = 0.90,
-)
-```
-
-说明：VotingMethod 当前不使用子采样，`ss_iterations`、`ss_ratio`、`ss_threshold` 无需设置；`target_n` 也不直接控制最终特征数。若候选特征超过 `128`，算法选取前 BQC打分前`128` 个基因对，进入 Voting 模型构建。
-
-#### RFMethod
-
-```julia
-cfg = REOConfig(
-    method = RFMethod,
-    ss_iterations = 500,
-    ss_ratio = 0.8,
-    target_n = 15,
-)
-```
-
-说明：RF 读取 `ss_iterations`、`ss_ratio`、`target_n`。
-
-#### LassoMethod
-
-```julia
-cfg = REOConfig(
-    method = LassoMethod,
-    ss_iterations = 500,
-    ss_ratio = 0.75,
-    ss_threshold = 0.6,
-    target_n = 15,
-)
-```
-
-说明：Lasso 读取 `ss_iterations`、`ss_ratio`、`ss_threshold`、`target_n`。
-
-#### TSP / k-TSP / AUC-TSP
-
-```julia
-cfg = REOConfig(
-    low_rank_q = 0.0,
-    top_diff_n = 500,
-)
-```
-
-说明：TSP 系列只使用 `low_rank_q`、`top_diff_n` 和预筛选日志相关的 `verbose`。`method`、BQC、`ss_`、`target_n` 等参数都不影响 TSP 系列；`fit_ktsp` 和 `fit_auctsp` 的对子数量由函数参数 `k_max` 控制。
 
 ### 常见调参方向
 
