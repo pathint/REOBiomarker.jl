@@ -161,6 +161,7 @@ flowchart TD
 | --- | --- |
 | `REOConfig` | Training configuration |
 | `fit_reo` | Train an REOBiomarker model |
+| `fit_reo_dist` | Fit the distribution of REOs in a dataset with Beta and Probit-Normal distributions |
 | `predict_reo` | Return prediction probabilities and binary labels |
 | `evaluate_reo` | Return accuracy, MCC, AUC, and predictions |
 | `run_permutation_test` | Estimate significance of observed MCC via label permutation |
@@ -225,21 +226,6 @@ Only affects the REOBiomarker main pipeline.  Range: `1–5`.
 Default: `0.90`.  Pearson correlation threshold for pruning redundant binary
 features.  Only affects the REOBiomarker main pipeline.  Range: `0.8–0.99`.
 
-#### `ss_iterations`
-
-Default: `1000`.  Number of stability-selection iterations (RF / Lasso).
-Ignored by VotingMethod.  Range: `5–1000`.
-
-#### `ss_ratio`
-
-Default: `0.8`.  Per-class sub-sampling ratio (RF / Lasso).  Ignored by
-VotingMethod.  Range: `0.5–1.0` (do not set to 1.0).
-
-#### `ss_threshold`
-
-Default: `0.7`.  Minimum selection frequency to retain a feature (Lasso only).
-Range: `0.0–1.0`.
-
 #### `target_n`
 
 Default: `15`.  Target number of final features (RF / Lasso).  Ignored by
@@ -248,62 +234,6 @@ VotingMethod.  Range: `5–30`.
 #### `verbose`
 
 Default: `false`.  Print diagnostic messages when `true`.
-
-### Recommended Configurations
-
-#### VotingMethod
-
-```julia
-cfg = REOConfig(
-    method = VotingMethod,
-    low_rank_q = 0.2,
-    top_diff_n = 1000,
-    bqc_threshold = 2.0,
-    p0_threshold = 0.1,
-    max_occurrence = 2,
-    cor_threshold = 0.90,
-)
-```
-
-VotingMethod does not use sub-sampling; `ss_iterations`, `ss_ratio`,
-`ss_threshold`, and `target_n` have no effect.  If more than 128 candidate
-features remain, only the first 128 are passed to the voting search.
-
-#### RFMethod
-
-```julia
-cfg = REOConfig(
-    method = RFMethod,
-    ss_iterations = 500,
-    ss_ratio = 0.8,
-    target_n = 15,
-)
-```
-
-#### LassoMethod
-
-```julia
-cfg = REOConfig(
-    method = LassoMethod,
-    ss_iterations = 500,
-    ss_ratio = 0.75,
-    ss_threshold = 0.6,
-    target_n = 15,
-)
-```
-
-#### TSP / k-TSP / AUC-TSP
-
-```julia
-cfg = REOConfig(
-    low_rank_q = 0.0,
-    top_diff_n = 500,
-)
-```
-
-TSP variants use only `low_rank_q`, `top_diff_n`, and `verbose`.
-The number of pairs in k-TSP / AUC-TSP is controlled by the `k_max` function
-argument.
 
 ### Tuning Tips
 

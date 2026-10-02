@@ -8,6 +8,7 @@ Fit the distribution of REOs with symmetric beta or probit-normal distributions.
 
 Return the best fit parameter and sum of squared errors (SSE):
  ((alpha = ., sse_beta = .), (tau = ., sse_probit = .))
+
 """
 function fit_reo_dist(data::Matrix{<:Real}, cfg::REOConfig)
     # 1. Filter low-expression genes

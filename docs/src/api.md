@@ -17,8 +17,10 @@ REOBiomarker.AUCTSPModel
 
 ```@docs
 REOBiomarker.fit_reo
+REOBiomarker.fit_reo_dist
 REOBiomarker.predict_reo
 REOBiomarker.evaluate_reo
+REOBiomarker.check_task_difficulty
 REOBiomarker.run_permutation_test
 REOBiomarker.generate_test_data
 ```

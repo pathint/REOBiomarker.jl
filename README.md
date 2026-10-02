@@ -159,6 +159,7 @@ flowchart TD
 | --- | --- |
 | `REOConfig` | Training configuration |
 | `fit_reo` | Train an REOBiomarker model |
+| `fit_reo_dist` | Fit the distribution of REOs in a dataset with Beta and Probit-Normal distributions |
 | `predict_reo` | Return prediction probabilities and binary labels |
 | `evaluate_reo` | Return accuracy, MCC, AUC, and predictions |
 | `run_permutation_test` | Estimate significance of observed MCC via label permutation |

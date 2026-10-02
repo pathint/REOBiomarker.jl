@@ -143,6 +143,7 @@ flowchart TD
 | --- | --- |
 | `REOConfig` | REOBiomarker 训练配置 |
 | `fit_reo` | 训练 REOBiomarker 模型 |
+| `fit_reo_dist` | 使用Beta和Probit-Normal拟合一个数据集中的REOs分布 |
 | `predict_reo` | 返回预测概率/投票分数和布尔预测 |
 | `evaluate_reo` | 返回准确率、MCC、AUC 和预测结果 |
 | `run_permutation_test` | 通过标签置换估计观测 MCC 的显著性 |
