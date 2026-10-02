@@ -1,166 +1,86 @@
 using Distributions, QuadGK, Statistics
 using Base.Threads
-using ThreadsX
 
 """
-    estimate_global_tau(data) -> Float64
+    fit_reo_dist(data, cfg)
 
-Estimate the global signal-to-noise ratio tau from the expression matrix.
+Fit the distribution of REOs with symmetric beta or probit-normal distributions.
+
+Return the best fit parameter and sum of squared errors (SSE):
+ ((alpha = ., sse_beta = .), (tau = ., sse_probit = .))
 """
-function estimate_global_tau(data::Matrix{Float64})
-    gene_means = mean(data; dims=2)
-    S = std(gene_means)
+function fit_reo_dist(data::Matrix{<:Real}, cfg::REOConfig)
+    # 1. Filter low-expression genes
+    cfg.verbose && println(">>> Filtering low-expression genes...")
+    keep_low = filter_low_rank_genes(data, cfg.low_rank_q; verbose=cfg.verbose)
 
-    n_genes = size(data, 1)
-    sample_size = min(1000, n_genes)
-    indices = rand(1:n_genes, sample_size)
+    # 2. Estimate the global alpha 
+	cfg.verbose && 
+	println(">>> Estimate global α (symmetric Beta) and τ (Probit-Normal) values ...")
 
-    pair_stds = [
-        std(data[indices[i], :] .- data[indices[j], :]) for i in 1:sample_size for
-        j in (i + 1):sample_size
-    ]
-    sigma_D = median(pair_stds)
-
-    return max((sqrt(2) * S) / sigma_D, 2.0)
+    counts_freq = calculate_reo_distribution(data[keep_low,:]; verbose = cfg.verbose)
+    counts_emp  = symmetrize_and_to_pdf(counts_freq; verbose = cfg.verbose)
+    return fit_distributions(counts_emp; verbose = cfg.verbose)
 end
 
 """
-    estimate_global_tau_parallel(data; n_iters=20, sample_size=1000) -> (mean, std, all_values)
+	calculate_bqc(k0, n0, k1, n1, α; n_power = 1, eps = 1e-15) -> (bqc, p0)
 
-Parallel estimation of tau via repeated random sub-sampling.
+Calculate Bayesian Quality Control (BQC) score and posterior p0, by integrating the 
+overlapping area between the posterior distributions of the REO in the control group 
+and in the case group. 
+`k0` and `n0` are the total number of occurence of the REO (g1 > g2) and sample size of
+the control group, respectively;
+`k1` and `n1` are the total number of occurence of the REO (g1 > g2) and sample size of
+the case group, respectively;
+`α` is the estimated parameter for the Beta prior;
+`n_power` is for the penaty power (1 or 2);
+`eps` is for numerical stability.
 """
-function estimate_global_tau_parallel(
-    data::Matrix{Float64}, n_iters::Int=20; sample_size::Int=1000
+function calculate_bqc(
+    k0::Int, n0::Int, k1::Int, n1::Int, 
+    alpha_global::Float64; 
+    n_power=1, eps=1e-15
 )
-    n_genes = size(data, 1)
-
-    gene_means = mean(data; dims=2)
-    S = std(gene_means)
-
-    tau_results = zeros(Float64, n_iters)
-    actual_sample_size = min(sample_size, n_genes)
-
-    Threads.@threads for k in 1:n_iters
-        indices = rand(1:n_genes, actual_sample_size)
-        n_pairs = Int(actual_sample_size * (actual_sample_size - 1) / 2)
-        pair_stds = Vector{Float64}(undef, n_pairs)
-
-        idx = 1
-        for i in 1:actual_sample_size
-            for j in (i + 1):actual_sample_size
-                pair_stds[idx] = std(data[indices[i], :] .- data[indices[j], :])
-                idx += 1
-            end
-        end
-
-        sigma_D = median(pair_stds)
-        tau_results[k] = max((sqrt(2) * S) / sigma_D, 2.0)
+	# 1. Compute the posterior mean for the control group and use it
+	#    as a more robust anchor for p0.
+	#    Posterior mean of a Beta distribution: (α + k) / (α + β + n).
+	#    The prior is symmetric, so α + β = 2 * alpha_global.
+    p0_post_mean = (alpha_global + k0) / (2 * alpha_global + n0)
+    
+    # 2. Build the full posterior distributions for the control and case groups
+    dist_control = Beta(alpha_global + k0, alpha_global + n0 - k0)
+    dist_case    = Beta(alpha_global + k1, alpha_global + n1 - k1)
+    
+	# 3. Numerically integrate along the direction indicated by the data to obtain
+	#    the base Bayesian quality score (base BQC).
+    if p0_post_mean >= 0.5
+		# The steady state corresponds to g1 > g2: compute P(θ_case < θ_control).
+		integrand = p -> pdf(dist_control, p) * cdf(dist_case, p)
+    else
+		# The steady state corresponds to g1 < g2: compute P(θ_case > θ_control).
+		integrand = p -> pdf(dist_control, p) * (1.0 - cdf(dist_case, p))
     end
+    
+	# Split the range to avoid the divergence issue at `p = 0` and `p = 1`
+	base_bqc, err = quadgk(integrand, 0.0, 0.5, 1.0; rtol=1e-10)
 
-    mean_tau = mean(tau_results)
-    std_tau = std(tau_results)
+    base_bqc = clamp(base_bqc, 0.0, 1.0)
 
-    return (mean=mean_tau, std=std_tau, all_values=tau_results)
+	# 4. Transform to logarithmic space; '+eps' avoids log(0).
+    log_part = -log10(1.0 - base_bqc + eps)
+    
+	# 5. Weight the score by how strongly the data support the observed direction,
+	#    using the more robust posterior mean as the anchor.
+    weight_part = (abs(p0_post_mean - 0.5) * 2.0)^n_power
+    
+    # 6. Combine both parts to obtain the final enhanced score.
+    score = log_part * weight_part
+    
+    return score, p0_post_mean
 end
 
-"""
-    calculate_bayesian_shift_score(k, n, p0, tau) -> Float64
 
-Compute the posterior probability that the ordering has flipped relative to
-the control-group baseline p0, given a U-shaped Beta-like prior scaled by tau.
-"""
-function calculate_bayesian_shift_score(k, n, p0, tau)
-    prior(p) = begin
-        if p <= 1e-6 || p >= 1-1e-6
-            return 0.0
-        end
-        z = quantile(Normal(), p)
-        return (1/tau) * exp(z^2 * 0.5 * (1 - 1/tau^2))
-    end
-
-    likelihood(p) = pdf(Binomial(n, p), k)
-
-    numerator, _ = quadgk(p -> likelihood(p) * prior(p), 0.5, 1.0)
-    denominator, _ = quadgk(p -> likelihood(p) * prior(p), 0.0, 1.0)
-
-    post_prob = numerator / (denominator + 1e-12)
-    return p0 < 0.5 ? post_prob : (1.0 - post_prob)
-end
-
-"""
-    calculate_enhanced_bqc(k1, n1, p0, tau) -> Float64
-
-Enhanced Bayesian Quality Control score.  Combines the posterior shift
-probability with an anchor weight that penalises pairs whose control-group
-ordering is close to 0.5 (unstable).
-"""
-function calculate_enhanced_bqc(k1, n1, p0, tau)
-    conf = calculate_bayesian_shift_score(k1, n1, p0, tau)
-
-    anchor_weight = abs(p0 - 0.5) * 2.0
-    eps = 1e-15
-    nlp_score = -log10(1.0 - conf + eps)
-
-    return nlp_score * anchor_weight
-end
-
-"""
-    generate_bqc_lookup_table(n0, n1, tau) -> Matrix{Float64}
-
-Pre-compute the enhanced-BQC score for every (k0, k1) combination.
-"""
-function generate_bqc_lookup_table(n0::Int, n1::Int, tau::Real)
-    table = zeros(Float64, n0 + 1, n1 + 1)
-
-    Threads.@threads for k0 in 0:n0
-        p0 = k0 / n0
-        for k1 in 0:n1
-            table[k0 + 1, k1 + 1] = calculate_enhanced_bqc(k1, n1, p0, tau)
-        end
-    end
-
-    return table
-end
-
-"""
-    lookup_bqc(table, k0, k1) -> Float64
-
-Fast O(1) lookup into a pre-computed BQC table.
-"""
-@inline function lookup_bqc(table::Matrix{Float64}, k0::Int, k1::Int)
-    return table[k0 + 1, k1 + 1]
-end
-
-"""
-    generate_bqc_threshold_dict(n0, n1, tau, bqc_limit, p0_threshold) -> Dict{Int,Int}
-
-Build a lookup dictionary mapping each valid k0 to the critical k1 that
-achieves the BQC score threshold.  Only k0 values satisfying the p0 stability
-criterion are included.
-"""
-function generate_bqc_threshold_dict(
-    n0::Int, n1::Int, tau::Real, bqc_limit::Float64, p0_threshold::Float64
-)
-    threshold_dict = Dict{Int,Int}()
-
-    k0_high_min = ceil(Int, (0.5 + p0_threshold) * n0)
-    k0_low_max = floor(Int, (0.5 - p0_threshold) * n0)
-
-    for k0 in 0:k0_low_max
-        p0 = k0 / n0
-        pre_k1 = get(threshold_dict, k0 - 1, nothing)
-        fro_k1 = isnothing(pre_k1) ? ceil(Int, n1/2) : pre_k1
-        for k1 in fro_k1:n1
-            if calculate_enhanced_bqc(k1, n1, p0, tau) >= bqc_limit
-                threshold_dict[k0] = k1
-                threshold_dict[n0 - k0] = n1 - k1  # symmetry
-                break
-            end
-        end
-    end
-
-    return threshold_dict
-end
 
 """
     calibrate_threshold(scores, labels) -> Float64
@@ -191,4 +111,213 @@ function calibrate_threshold(scores, labels)
         end
     end
     return best_t
+end
+
+
+"""
+	generate_bqc_threshold_dict(n0, n1, α, bqc_threshold, p0_threshold; verbose = false) 
+
+Generate a lookup dictionary mapping control group REO count (k0) 
+to the minimum required case group count (k1) to satisfy the BQC threshold.
+"""
+function generate_bqc_threshold_dict(
+    n0::Int,
+    n1::Int,
+    alpha_global::Float64,
+    bqc_threshold::Float64,
+    p0_threshold::Float64;
+    verbose::Bool = false,
+)
+    # Result dictionary: k0 => k1_minimum_threshold
+    threshold_dict = Dict{Int, Int}()
+
+    verbose && println(">>> Generating threshold dictionary(p0_threshold = " * 
+					   "$p0_threshold, bqc_threshold = $bqc_threshold)...")
+
+    # Iterate through possible k0 values from 0 up to n0/2
+    for k0 in 0:div(n0, 2)
+        # Calculate the stable posterior mean for the control group to check p0_threshold
+        p0_post_mean = (alpha_global + k0) / (2 * alpha_global + n0)
+        
+        # Filter based on p0_diff: if it doesn't cross the threshold, we stop searching
+        # since abs(p0_post_mean - 0.5) monotonically decreases as k0 approaches n0/2
+        if abs(p0_post_mean - 0.5) <= p0_threshold
+            break
+        end
+
+        # The required k1 boundary is monotonic w.r.t. k0
+        pre_k1 = get(threshold_dict, k0 - 1, nothing)
+        fro_k1 = isnothing(pre_k1) ? ceil(Int, n1 / 2) : pre_k1
+        
+        for k1 in fro_k1:n1
+            # Call the updated hierarchical BQC function
+            score, _ = calculate_bqc(
+                k0, n0, k1, n1, alpha_global; n_power = 1)
+            
+            if score >= bqc_threshold
+                threshold_dict[k0] = k1
+                threshold_dict[n0 - k0] = n1 - k1 # Enforce symmetry
+                break # Once the score boundary is hit, move to the next k0
+            end
+        end
+    end
+
+    verbose && println("    Dictionary generation complete: retained " *
+					   "$(length(threshold_dict)) valid steady-state conditions.")
+    return threshold_dict
+end
+
+
+
+# ===================================================================
+# 1. 计算 REO 频数分布 (多线程并行)
+# ===================================================================
+"""
+    calculate_reo_distribution(data; verbose = false)
+
+Calculate the REO distributions in parallel for `data`.
+"""
+function calculate_reo_distribution(data::Matrix{<:Real}; verbose = false)
+    n_genes, n_samples = size(data)
+    n_pairs = div(n_genes * (n_genes - 1), 2)
+    
+    verbose && println(">>> [1/4] Start to count REOs...")
+    verbose && println("    $n_genes genes *  $n_samples samples, $n_pairs pairs")
+   
+	atomic_counts = [Threads.Atomic{Int}(0) for _ in 1:(n_samples + 1)]
+
+	# Handle ties
+	thread_rand_bits = [BitVector(undef, n_samples) for _ in 1:nthreads()]
+
+    Threads.@threads for i in 1:(n_genes-1)
+		# NOTE: dynamic assignment? `threadid()` could be larger than `nthreads()`
+		id = mod1(threadid(), nthreads())
+		rand_bits = thread_rand_bits[id]
+        @inbounds for j in (i+1):n_genes
+            k = 0
+			rand!(rand_bits)
+            for s in 1:n_samples
+                a = data[i, s] 
+				b = data[j, s]
+				k += (a > b) | ((a == b) & rand_bits[s])
+            end
+			Threads.atomic_add!(atomic_counts[k + 1], 1)
+        end
+    end
+    
+	return [atomic_counts[i][] for i in 1:(n_samples + 1)]
+end
+
+# ===================================================================
+# 2. 强制对称与经验概率密度 (Empirical PDF) 转换
+# ===================================================================
+"""
+    symmetrize_and_to_pdf(counts, verbose = false)
+
+Symmetrize the REO counts vectors and return emprical PDF.
+"""
+function symmetrize_and_to_pdf(counts::Vector{Int}; verbose = false)
+    m = length(counts) - 1
+    sym_counts = zeros(Float64, m + 1)
+    
+    verbose && println(">>> [2/4] Symmetrize and convert frequencies to PDF...")
+    
+    for k in 0:m
+        sym_counts[k + 1] = (counts[k + 1] + counts[m - k + 1]) / 2.0
+    end
+    
+	# Convert to the emprical PDF density, total area = 1
+    dp = 1.0 / m
+    emp_pdf = sym_counts ./ (sum(sym_counts) * dp)
+    return emp_pdf
+end
+
+# ===================================================================
+# 3. 分布拟合 (基于内部点的最小二乘法网格搜索)
+# ===================================================================
+"""
+    fit_distributions(emp_pdf; verbose = false)
+
+Estimate the α parameter in the Beta dsitribution and the τ parameter
+in the Probit-Normal distribution.
+Return the best-fit α and τ, and the fitting errors.
+"""
+function fit_distributions(emp_pdf::Vector{Float64}; verbose = false)
+    m = length(emp_pdf) - 1
+    
+	# Avoid the boundary points at `p=0` and `p=1`.
+    p_vals = collect(1:m-1) ./ m
+    target_pdf = emp_pdf[2:end-1]
+    
+    verbose && println(">>> [3/4] Fit to the symmetric Beta distribution ...")
+    best_alpha, min_sse_beta = 1.0, Inf
+    # alpha 通常在 (0, 1] 之间表示 U型分布
+    for alpha in 0.001:0.001:2.0
+        pred_pdf = [pdf(Beta(alpha, alpha), p) for p in p_vals]
+        sse = sum((pred_pdf .- target_pdf).^2)
+        if sse < min_sse_beta
+            min_sse_beta = sse
+            best_alpha = alpha
+        end
+    end
+    
+	verbose && println("          Best-fit α =  $(best_alpha)")
+    verbose && println(">>> [3/4] Fit to the Probit-Normal distribution ...")
+    best_tau, min_sse_probit = 1.0, Inf
+    norm_dist = Normal(0, 1)
+    # tau 通常 > 1 表示 U型分布
+    for tau in 1.01:0.01:20.0
+        pred_pdf = Float64[]
+        for p in p_vals
+            # f(p) = (1/tau) * exp( (Phi^-1(p))^2 / 2 * (1 - 1/tau^2) )
+            z = quantile(norm_dist, p)
+            val = (1.0 / tau) * exp((z^2 / 2.0) * (1.0 - 1.0 / tau^2))
+            push!(pred_pdf, val)
+        end
+        sse = sum((pred_pdf .- target_pdf).^2)
+        if sse < min_sse_probit
+            min_sse_probit = sse
+            best_tau = tau
+        end
+    end
+	verbose && println("          Best-fit τ =  $(best_tau)")
+    
+    return ((alpha=best_alpha, sse_beta=min_sse_beta), 
+			(tau=best_tau, sse_probit=min_sse_probit))
+end
+
+
+"""
+    calculate_tdi_metrics(results, bqc_threshold, p0_threshold;
+	                      top_k = 50, verbose = false)
+						  
+Calculates the Task Difficulty Index (TDI) and classifies the dataset's 
+signaling strength.
+- `results`: The vector of NamedTuples containing all pairs' scores.
+- `bqc_threshold`, `p0_threshold`: The filtering cutoffs.
+- `top_k`: the number of top REOs used to estimate the index.
+"""
+function calculate_tdi_metrics(results, bqc_threshold::Float64, p0_threshold::Float64; 
+		top_k::Int=50, verbose = false)
+    # 1. Extract all REOs with BQC > 0
+    plot_scores = [x for x in results if x.score > 0.0]
+    
+    # 2. Total number of REOs passing the threshold (N_effective)
+    n_effective = count(x -> x.score >= bqc_threshold && x.p0_diff > p0_threshold, results)
+    
+    # 3. Mean BQC score for the top k REOs (mu_top)
+    all_scores_sorted = sort([x.score for x in results], rev=true)
+    k = min(top_k, length(all_scores_sorted))
+    mu_top = k > 0 ? sum(all_scores_sorted[1:k]) / k : 0.0
+    
+    # 4. TDI
+    tdi_score = log10(n_effective + 1) * mu_top
+    
+    verbose && println(">>> Evaluate task difficulity metrics ...")
+    verbose && println("    Effective Feature Pool (N_effective): $n_effective")
+    verbose && println("    Top-$k Core Signal Mean (mu_top): $(round(mu_top, digits=4))")
+    verbose && println("    Task Difficulty Index (TDI): " *
+					   "$(round(tdi_score, digits=4))")
+    
+    return tdi_score, plot_scores
 end

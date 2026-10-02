@@ -24,9 +24,6 @@ Hyperparameter configuration for the REOBiomarker algorithm.
 - `max_occurrence`: Maximum times a single gene may appear across candidate pairs.
 - `p_val_cutoff`: p-value threshold for confounding-factor audit.
 - `cor_threshold`: Correlation threshold for pruning redundant binary features.
-- `ss_iterations`: Number of stability-selection iterations (RF / Lasso).
-- `ss_ratio`: Sub-sampling ratio per class in each iteration (RF / Lasso).
-- `ss_threshold`: Minimum selection frequency to keep a feature (Lasso only).
 - `target_n`: Target number of final features (RF / Lasso).
 - `bqc_threshold`: Minimum enhanced-BQC score to retain a gene pair.
 - `p0_threshold`: Minimum |p0 − 0.5| for control-group stability.
@@ -36,22 +33,32 @@ Base.@kwdef struct REOConfig
     method::REOMethod = RFMethod
 
     # Gene-level filtering
-    low_rank_q::Float64 = 0.2
-    top_diff_n::Int = 5000
-    max_occurrence::Int = 2
-    p_val_cutoff::Float64 = 0.05
+    low_rank_q::Float64    = 0.2
+    top_diff_n::Int        = 5000
+    max_occurrence::Int    = 2
+    p_val_cutoff::Float64  = 0.05
     cor_threshold::Float64 = 0.90
-
-    # Stability selection (RF / Lasso)
-    ss_iterations::Int = 1000
-    ss_ratio::Float64 = 0.8
-    ss_threshold::Float64 = 0.7
 
     # BQC gene-pair filtering
     bqc_threshold::Float64 = 3.0
-    p0_threshold::Float64 = 0.2
+    p0_threshold::Float64  = 0.2
+	global_alpha::Union{Nothing, Float64} = nothing
 
-    target_n::Int = 15
+    # Common selection parameters
+    target_n::Int  = 15
+	n_folds::Int   = 5
+	metric::String = "AUC"
+	seed::Int      = 43
+
+	#Lasso specific parameters
+	gamma::Float64 = 1.0
+
+	# Vote specific parameters
+	mode::String    = "soft" # soft, hard or auc
+	lambda::Float64 = 0.02
+	max_iter::Int   = 200
+
+	# Printing verbosity
     verbose::Bool = false
 end
 
@@ -59,6 +66,12 @@ end
     REOModel
 
 A trained REOBiomarker model holding the selected gene pairs, their weights, and bias.
+
+# Fields
+ - `config::REOConfig`: config used for training
+ - `final_pairs: aligned gene pairs, `g1 > g2` is `true` in the postive group
+ - `weights::Vector{Float64}`: weights for REOs
+ - `intercept::Float64`: intercept (bias)
 """
 struct REOModel
     config::REOConfig

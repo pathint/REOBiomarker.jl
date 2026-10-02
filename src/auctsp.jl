@@ -1,19 +1,23 @@
-using Statistics, DataFrames
+using Statistics
+#, DataFrames
 
 """
     fit_auctsp(data, labels, gene_names, cfg; k_max=9) -> AUCTSPModel
 
-Train an AUC-based TSP model. For each gene pair, computes AUC in both
-ordering directions and greedily selects up to `k_max` disjoint pairs.
+Train an AUC-based TSP model. 
+
+For each gene pair, computes AUC in both ordering directions and 
+greedily selects up to `k_max` disjoint pairs.
 """
 function fit_auctsp(
     data::Matrix{T}, labels::AbstractVector, gene_names::Vector, cfg::REOConfig; k_max=9
 ) where {T<:Real}
     selected_genes = filter_genes(data, labels, gene_names, cfg)
-    data = data[selected_genes, :]
+	length(selected_genes) >= 2 || error("AUC-TSP needs at least 2 candidate genes")
+    train_data = data[selected_genes, :]
     gene_names = gene_names[selected_genes]
 
-    n_genes, n_samples = size(data)
+    n_genes, n_samples = size(train_data)
     idx0 = findall(==(0), labels)
     idx1 = findall(==(1), labels)
     n0, n1 = length(idx0), length(idx1)
@@ -22,8 +26,8 @@ function fit_auctsp(
 
     for i in 1:(n_genes - 1)
         for j in (i + 1):n_genes
-            p_ij_1 = sum(data[i, idx1] .< data[j, idx1]) / n1
-            p_ij_0 = sum(data[i, idx0] .< data[j, idx0]) / n0
+            p_ij_1 = sum(train_data[i, idx1] .< train_data[j, idx1]) / n1
+            p_ij_0 = sum(train_data[i, idx0] .< train_data[j, idx0]) / n0
 
             # AUC for both directions
             auc_a = (p_ij_1 + (1 - p_ij_0)) / 2  # Xi < Xj → Class 1
@@ -33,18 +37,19 @@ function fit_auctsp(
             direction = auc_a >= auc_b ? 1 : -1
 
             secondary = abs(
-                mean(data[i, idx1] .- data[j, idx1]) - mean(data[i, idx0] .- data[j, idx0])
+                mean(train_data[i, idx1] .- train_data[j, idx1]) -
+				mean(train_data[i, idx0] .- train_data[j, idx0])
             )
 
             push!(all_pairs_stats, (i, j, best_auc, secondary, direction))
         end
     end
 
-    sort!(all_pairs_stats; by=x -> (x[3], x[4]), rev=true)
+    sort!(all_pairs_stats; by = x -> (x[3], x[4]), rev=true)
 
     # Greedy disjoint selection
     selected_pairs = []
-    used_genes = Set{Int}()
+    used_genes     = Set{Int}()
 
     for (i, j, auc_val, _, dir) in all_pairs_stats
         length(selected_pairs) >= k_max && break
@@ -62,8 +67,7 @@ function fit_auctsp(
         [(gene_names[p[1]], gene_names[p[2]]) for p in selected_pairs],
         [p[3] for p in selected_pairs],
         [p[4] for p in selected_pairs],
-        k_final,
-    )
+        k_final)
 end
 
 """
@@ -75,8 +79,9 @@ function predict_auctsp(
     model::AUCTSPModel, new_data::Matrix{T}, gene_names::Vector
 ) where {T<:Real}
     gene_to_row = Dict(gene => i for (i, gene) in enumerate(gene_names))
-    n_samples = size(new_data, 2)
-    votes = zeros(Float64, n_samples)
+    
+	n_samples = size(new_data, 2)
+    votes     = zeros(Float64, n_samples)
 
     for (idx, (name_i, name_j)) in enumerate(model.gene_names)
         i = gene_to_row[name_i]
@@ -88,5 +93,5 @@ function predict_auctsp(
         end
     end
 
-    return (votes .> (model.k / 2))
+    return (votes .> (model.k / 2), votes)
 end

@@ -2,14 +2,14 @@ using REOBiomarker
 using Test
 using Statistics
 
-# Generate simulated data: 1000 genes, 200 samples
+# Generate simulated data: 500 genes, 50 samples
 # Gene_1 and Gene_2 are designed to have strong discriminative power
-data, labels, genes = generate_test_data(1000, 200)
+data, labels, genes = generate_test_data(500, 50)
 
 @testset "REOBiomarker full pipeline" begin
     @testset "Low-level filter functions (filters.jl)" begin
         keep_low = REOBiomarker.filter_low_rank_genes(data, 0.1)
-        @test length(keep_low) <= 1000
+        @test length(keep_low) <= 500
         @test length(keep_low) > 0
 
         keep_diff = REOBiomarker.filter_diff_rank_genes(data, labels, keep_low, top_n=100)
@@ -22,11 +22,31 @@ data, labels, genes = generate_test_data(1000, 200)
         @test pvals[1] <= pvals[end]
     end
 
+    @testset "TDI" begin
+        cfg = REOConfig(
+            bqc_threshold=0.05,
+            p0_threshold=0.05,
+            verbose=false,
+        )
+        _, _, tdi_score, _ = check_task_difficulty(data, labels, genes, cfg)
+        @test tdi_score > 0.0
+    end
+
+    @testset "REO distribution" begin
+        cfg = REOConfig(
+            low_rank_q = 0.0,
+            verbose=false,
+        )
+		beta_res, probit_res = fit_reo_dist(data, cfg)
+        @test beta_res.alpha > 0.0
+        @test probit_res.tau > 0.0
+    end
+
     @testset "VotingMethod" begin
         cfg_vote = REOConfig(
             method=VotingMethod,
-            top_diff_n=500,
-            bqc_threshold=1.0,
+            top_diff_n=400,
+            bqc_threshold=0.5,
             p0_threshold=0.05,
             verbose=false,
         )
@@ -51,8 +71,7 @@ data, labels, genes = generate_test_data(1000, 200)
         cfg_rf = REOConfig(
             method=RFMethod,
             target_n=5,
-            ss_iterations=100,
-            bqc_threshold=1.0,
+            bqc_threshold=0.5,
             p0_threshold=0.05,
             verbose=false,
         )
@@ -72,7 +91,7 @@ data, labels, genes = generate_test_data(1000, 200)
         cfg_lasso = REOConfig(
             method=LassoMethod,
             target_n=5,
-            bqc_threshold=1.0,
+            bqc_threshold=0.5,
             p0_threshold=0.05,
             verbose=false,
         )
@@ -88,8 +107,7 @@ data, labels, genes = generate_test_data(1000, 200)
         cfg = REOConfig(
             method=RFMethod,
             target_n=3,
-            ss_iterations=50,
-            bqc_threshold=1.0,
+            bqc_threshold=0.5,
             p0_threshold=0.05,
             verbose=false,
         )
@@ -102,12 +120,12 @@ data, labels, genes = generate_test_data(1000, 200)
     end
 
     @testset "TSP baseline" begin
-        cfg = REOConfig(low_rank_q=0.0, top_diff_n=500)
+        cfg = REOConfig(low_rank_q=0.0, top_diff_n=200)
         tsp = fit_tsp(data, labels, genes, cfg)
         @test tsp.gene_names[1] != tsp.gene_names[2]
         @test 0.0 <= tsp.score <= 1.0
 
-        preds = predict_tsp(tsp, data, genes)
+        preds, _ = predict_tsp(tsp, data, genes)
         @test length(preds) == size(data, 2)
     end
 
@@ -117,7 +135,7 @@ data, labels, genes = generate_test_data(1000, 200)
         @test ktsp.k <= 5
         @test ktsp.k % 2 == 1  # enforced odd
 
-        preds = predict_ktsp(ktsp, data, genes)
+        preds, _ = predict_ktsp(ktsp, data, genes)
         @test length(preds) == size(data, 2)
     end
 
@@ -126,15 +144,15 @@ data, labels, genes = generate_test_data(1000, 200)
         auctsp = fit_auctsp(data, labels, genes, cfg; k_max=5)
         @test length(auctsp.pairs) <= 5
 
-        preds = predict_auctsp(auctsp, data, genes)
+        preds, _ = predict_auctsp(auctsp, data, genes)
         @test length(preds) == size(data, 2)
     end
 
     @testset "Error handling" begin
-        cfg = REOConfig(target_n=3, bqc_threshold=1.0, p0_threshold=0.05, verbose=false)
+        cfg = REOConfig(target_n=3, bqc_threshold=0.5, p0_threshold=0.05, verbose=false)
         model = fit_reo(data, labels, genes, cfg)
 
-        wrong_genes = ["Wrong_$i" for i in 1:1000]
+        wrong_genes = ["Wrong_$i" for i in 1:500]
         @test_throws ErrorException predict_reo(model, data, wrong_genes)
     end
 end

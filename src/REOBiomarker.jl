@@ -1,12 +1,10 @@
 module REOBiomarker
 
-using Random, Statistics, StatsBase, Distributions
-using DataFrames, Lasso, GLM, Combinatorics, ThreadsX
-using DecisionTree, HypothesisTests, JLD2
-using StatisticalMeasures, CategoricalArrays, CategoricalDistributions
-
 export REOConfig, REOModel
-export fit_reo, predict_reo, evaluate_reo, run_permutation_test, generate_test_data
+export fit_reo, predict_reo, evaluate_reo
+export run_permutation_test, generate_test_data
+export check_task_difficulty
+export fit_reo_dist
 
 # Traditional TSP baselines
 export TSPModel, KTSPModel, AUCTSPModel
@@ -17,6 +15,8 @@ include("types.jl")       # Type definitions
 include("filters.jl")     # Gene and gene-pair filtering
 include("training.jl")    # Stability selection and model fitting
 include("vote.jl")        # Majority voting feature subset search
+include("lasso.jl")       # Weighted model, trained with Lasso
+include("rf.jl")          # Weighted model, random stumps
 include("evaluation.jl")  # Prediction, evaluation, and permutation tests
 include("utils.jl")       # Test data generation utilities
 include("statistics.jl")  # Bayesian quality control and tau/alpha estimation

@@ -1,18 +1,28 @@
-using Statistics, DataFrames
+using Statistics
+#, DataFrames
 
 """
     fit_ktsp(data, labels, gene_names, cfg; k_max=9) -> KTSPModel
 
-Train a k-Top Scoring Pairs model. Greedily selects up to `k_max` disjoint
-gene pairs ranked by |p1 − p0|, enforcing odd k to avoid ties.
+Train a k-Top Scoring Pairs (k-TSP) model. 
+
+Greedily selects up to `k_max` disjoint gene pairs ranked by 
+|p1 − p0|, enforcing odd k to avoid ties.
+
+Returns a trained `KTSPModel` object.
 """
 function fit_ktsp(
-    data::Matrix{T}, labels::AbstractVector, gene_names::Vector, cfg::REOConfig; k_max=9
+    data::Matrix{T}, 
+	labels::AbstractVector, 
+	gene_names::Vector, 
+	cfg::REOConfig; 
+	k_max::Int = 9
 ) where {T<:Real}
     selected_genes = filter_genes(data, labels, gene_names, cfg)
-    data = data[selected_genes, :]
+	length(selected_genes) >= 2 || error("At least 2 genes are needed.")
+    train_data = data[selected_genes, :]
     gene_names = gene_names[selected_genes]
-    n_genes, n_samples = size(data)
+    n_genes, n_samples = size(train_data)
 
     idx0 = findall(==(0), labels)
     idx1 = findall(==(1), labels)
@@ -22,8 +32,8 @@ function fit_ktsp(
     all_scores = []
     for i in 1:(n_genes - 1)
         for j in (i + 1):n_genes
-            p0 = sum(data[i, idx0] .< data[j, idx0]) / n0
-            p1 = sum(data[i, idx1] .< data[j, idx1]) / n1
+            p0 = sum(train_data[i, idx0] .< train_data[j, idx0]) / n0
+            p1 = sum(train_data[i, idx1] .< train_data[j, idx1]) / n1
             Δ = abs(p1 - p0)
             if Δ > 0
                 push!(all_scores, (i, j, Δ, p1 > p0))
@@ -31,13 +41,13 @@ function fit_ktsp(
         end
     end
 
-    sort!(all_scores; by=x -> x[3], rev=true)
+    sort!(all_scores; by = x -> x[3], rev=true)
 
     # Greedy disjoint selection
-    selected_pairs = Tuple{Int,Int}[]
+    selected_pairs  = Tuple{Int,Int}[]
     selected_scores = Float64[]
-    directions = Bool[]
-    used_genes = Set{Int}()
+    directions      = Bool[]
+    used_genes      = Set{Int}()
 
     for (i, j, Δ, dir) in all_scores
         length(selected_pairs) >= k_max && break
@@ -52,6 +62,7 @@ function fit_ktsp(
 
     # Enforce odd k to avoid ties
     k_final = length(selected_pairs)
+	k_final > 0 || error("k-TSP does not find effective gene pairs.")
     if k_final % 2 == 0 && k_final > 0
         pop!(selected_pairs);
         pop!(selected_scores);
@@ -64,8 +75,7 @@ function fit_ktsp(
         [(gene_names[p[1]], gene_names[p[2]]) for p in selected_pairs],
         selected_scores,
         directions,
-        k_final,
-    )
+        k_final)
 end
 
 """
@@ -77,8 +87,9 @@ function predict_ktsp(
     model::KTSPModel, new_data::Matrix{T}, gene_names::Vector
 ) where {T<:Real}
     gene_to_row = Dict(gene => i for (i, gene) in enumerate(gene_names))
+
     n_samples = size(new_data, 2)
-    votes = zeros(Int, n_samples)
+    votes     = zeros(Int, n_samples)
 
     for (idx, (gene_i, gene_j)) in enumerate(model.gene_names)
         i = gene_to_row[gene_i]
@@ -91,5 +102,5 @@ function predict_ktsp(
         end
     end
 
-    return (votes .> (model.k / 2))
+    return (votes .> (model.k / 2), votes)
 end

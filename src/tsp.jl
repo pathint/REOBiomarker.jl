@@ -3,7 +3,8 @@ using Statistics
 """
     fit_tsp(data, labels, gene_names, cfg) -> TSPModel
 
-Train a Top Scoring Pair model. Finds the single gene pair whose class-wise
+Train a traditional Top Scoring Pair (TSP) model. 
+Finds the single gene pair whose class-wise
 ordering frequency difference |p1 − p0| is maximal.
 """
 function fit_tsp(
@@ -19,9 +20,9 @@ function fit_tsp(
     idx1 = findall(==(1), labels)
     n0, n1 = length(idx0), length(idx1)
 
-    best_score = -1.0
+    best_score     = -1.0
     best_secondary = -1.0
-    best_pair = (0, 0)
+    best_pair      = (0, 0)
 
     # Pre-compute per-sample ranks for tie-breaking
     ranks = zeros(Float64, n_genes, n_samples)
@@ -69,6 +70,8 @@ end
     predict_tsp(model, new_data, gene_names) -> BitVector
 
 Predict class labels using a trained TSP model.
+
+If `gene_names` lacks the gene names in the model, `KeyError` will be thrown.
 """
 function predict_tsp(
     model::TSPModel, new_data::Matrix{T}, gene_names::Vector
@@ -81,8 +84,8 @@ function predict_tsp(
     is_less = new_data[gene_i, :] .< new_data[gene_j, :]
 
     if model.p1 > model.p0
-        return is_less
+		return (is_less, is_less)
     else
-        return .!is_less
+		return (.!is_less, .!is_less)
     end
 end
